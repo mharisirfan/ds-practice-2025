@@ -17,3 +17,5 @@ class FraudResponse(_message.Message):
     IS_FRAUD_FIELD_NUMBER: _ClassVar[int]
     is_fraud: str
     def __init__(self, is_fraud: _Optional[str] = ...) -> None: ...
+
+# .
