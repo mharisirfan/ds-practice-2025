@@ -12,14 +12,23 @@ import fraud_detection_pb2_grpc as fraud_detection_grpc
 
 import grpc
 
-def greet(name='you'):
+# def greet(name='you'):
+#     # Establish a connection with the fraud-detection gRPC service.
+#     with grpc.insecure_channel('fraud_detection:50051') as channel:
+#         # Create a stub object.
+#         stub = fraud_detection_grpc.HelloServiceStub(channel)
+#         # Call the service through the stub object.
+#         response = stub.SayHello(fraud_detection.HelloRequest(name=name))
+#     return response.greeting
+
+def check_fraud(card_number, order_amount):
     # Establish a connection with the fraud-detection gRPC service.
     with grpc.insecure_channel('fraud_detection:50051') as channel:
         # Create a stub object.
-        stub = fraud_detection_grpc.HelloServiceStub(channel)
+        stub = fraud_detection_grpc.FraudDetectionServiceStub(channel)
         # Call the service through the stub object.
-        response = stub.SayHello(fraud_detection.HelloRequest(name=name))
-    return response.greeting
+        response = stub.CheckFraud(fraud_detection.FraudRequest(card_number=card_number, order_amount=order_amount))
+    return response.is_fraud.lower() == "true"
 
 # Import Flask.
 # Flask is a web framework for Python.
@@ -41,7 +50,7 @@ def index():
     Responds with 'Hello, [name]' when a GET request is made to '/' endpoint.
     """
     # Test the fraud-detection gRPC service.
-    response = greet(name='orchestrator')
+    response = "Hello, you!"
     # Return the response.
     return response
 
@@ -54,11 +63,16 @@ def checkout():
     request_data = json.loads(request.data)
     # Print request object data
     print("Request Data:", request_data.get('items'))
+    credit_card_numer: str = request_data["creditCard"]["number"]
+    order_amount: str = str(len(request_data["items"]))
+    is_fraud = check_fraud(credit_card_numer, order_amount)
 
+    order_approve_text = "Order Rejected" if is_fraud else "Order Approved"
     # Dummy response following the provided YAML specification for the bookstore
+    #TODO: order approved depend on fraud-detection stuff
     order_status_response = {
         'orderId': '12345',
-        'status': 'Order Approved',
+        'status': order_approve_text,
         'suggestedBooks': [
             {'bookId': '123', 'title': 'The Best Book', 'author': 'Author 1'},
             {'bookId': '456', 'title': 'The Second Best Book', 'author': 'Author 2'}
