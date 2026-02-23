@@ -22,7 +22,14 @@ sys.path.insert(0, transaction_verification_grpc_path)
 import transaction_verification_pb2 as transaction_verification
 import transaction_verification_pb2_grpc as transaction_verification_grpc
 
+# Setup suggestions gRPC path
+suggestions_grpc_path = os.path.abspath(os.path.join(FILE, '../../../utils/pb/suggestions'))
+sys.path.insert(0, suggestions_grpc_path)
+import suggestions_pb2 as suggestions
+import suggestions_pb2_grpc as suggestions_grpc
+
 import grpc
+import uuid
 
 # Configure logging
 logging.basicConfig(
@@ -72,6 +79,34 @@ def verify_transaction(user_id, credit_card, items):
         return False
 
 
+def get_suggestions(user_id, purchased_items):
+    """
+    Call the suggestions service via gRPC to get book suggestions.
+    """
+    try:
+        logger.info(f"Worker thread: Getting suggestions for user_id: {user_id}")
+        with grpc.insecure_channel('suggestions:50053') as channel:
+            stub = suggestions_grpc.SuggestionsServiceStub(channel)
+            response = stub.GetSuggestions(suggestions.SuggestionsRequest(
+                user_id=user_id,
+                purchased_items=purchased_items
+            ))
+        logger.info(f"Received {len(response.suggested_books)} book suggestions")
+        # Convert protobuf books to dict
+        suggested_books = [
+            {
+                'bookId': book.book_id,
+                'title': book.title,
+                'author': book.author
+            }
+            for book in response.suggested_books
+        ]
+        return suggested_books
+    except Exception as e:
+        logger.error(f"Error getting suggestions: {str(e)}")
+        return []
+
+
 # Import Flask
 from flask import Flask, request
 from flask_cors import CORS
@@ -98,7 +133,7 @@ def checkout():
     
     Process:
     1. Parse the incoming request data
-    2. Spawn worker threads to check fraud and verify transaction in parallel
+    2. Spawn worker threads to check fraud, verify transaction, and get suggestions in parallel
     3. Consolidate results
     4. Return appropriate response
     
@@ -115,28 +150,34 @@ def checkout():
         items = request_data.get('items', [])
         credit_card_data = request_data.get('creditCard', {})
         credit_card_number = credit_card_data.get('number', '')
-        user_id = request_data.get('userId', '')
+        user_data = request_data.get('user', {})
+        user_id = user_data.get('name', 'unknown_user')
         
         logger.info(f"Extracted data - User: {user_id}, Items: {len(items)}, Card ending in: {credit_card_number[-4:] if credit_card_number else 'N/A'}")
         
         # Convert items to list of item IDs for transaction verification
-        item_list = [item.get('bookId', '') for item in items]
+        item_list = [item.get('bookId', item.get('name', '')) for item in items]
         
-        # Execute fraud detection and transaction verification in parallel
+        # Execute fraud detection, transaction verification, and suggestions in parallel
         logger.info("Spawning worker threads for parallel processing")
         results = {
             'is_fraud': False,
             'is_transaction_valid': False,
+            'suggested_books': [],
             'fraud_error': None,
-            'transaction_error': None
+            'transaction_error': None,
+            'suggestions_error': None
         }
         
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             # Submit tasks for parallel execution
             fraud_task = executor.submit(check_fraud, credit_card_number, str(len(items)))
             transaction_task = executor.submit(verify_transaction, user_id, credit_card_number, item_list)
+            suggestions_task = executor.submit(get_suggestions, user_id, item_list)
             
             # Wait for tasks to complete and collect results
+            logger.info("Waiting for worker threads to complete...")
+            
             try:
                 results['is_fraud'] = fraud_task.result(timeout=10)
             except Exception as e:
@@ -150,29 +191,37 @@ def checkout():
                 logger.error(f"Transaction verification task failed: {str(e)}")
                 results['transaction_error'] = str(e)
                 results['is_transaction_valid'] = False
+            
+            try:
+                results['suggested_books'] = suggestions_task.result(timeout=10)
+            except Exception as e:
+                logger.error(f"Suggestions task failed: {str(e)}")
+                results['suggestions_error'] = str(e)
+                results['suggested_books'] = []
         
         # Consolidate results
-        logger.info(f"Results - Fraud: {results['is_fraud']}, Transaction Valid: {results['is_transaction_valid']}")
+        logger.info(f"All tasks completed. Results - Fraud: {results['is_fraud']}, Transaction Valid: {results['is_transaction_valid']}, Suggestions: {len(results['suggested_books'])}")
         
         # Determine order status
         if results['is_fraud'] or not results['is_transaction_valid']:
             order_status = "Order Rejected"
-            logger.warning(f"Order rejected - Fraud: {results['is_fraud']}, Invalid Transaction: {not results['is_transaction_valid']}")
+            suggested_books = []
+            reason = "Fraud detected" if results['is_fraud'] else "Transaction verification failed"
+            logger.warning(f"Order rejected - {reason}")
         else:
             order_status = "Order Approved"
-            logger.info("Order approved")
+            suggested_books = results['suggested_books']
+            logger.info(f"Order approved - Returning {len(suggested_books)} book suggestions")
         
         # Create response following API specification
+        order_id = str(uuid.uuid4())[:8]
         order_status_response = {
-            'orderId': '12345',
+            'orderId': order_id,
             'status': order_status,
-            'suggestedBooks': [
-                {'bookId': '123', 'title': 'The Best Book', 'author': 'Author 1'},
-                {'bookId': '456', 'title': 'The Second Best Book', 'author': 'Author 2'}
-            ] if order_status == "Order Approved" else []
+            'suggestedBooks': suggested_books
         }
         
-        logger.info(f"Returning response with status: {order_status}")
+        logger.info(f"Returning response - Order ID: {order_id}, Status: {order_status}")
         return order_status_response
     
     except json.JSONDecodeError as e:
