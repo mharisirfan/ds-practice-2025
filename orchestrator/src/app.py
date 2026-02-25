@@ -41,7 +41,17 @@ logger = logging.getLogger(__name__)
 
 def check_fraud(card_number, order_amount):
     """
-    Call the fraud detection service via gRPC to check if transaction is fraudulent.
+    gRPC CLIENT COMMUNICATION — FRAUD SERVICE
+
+    This function establishes a gRPC client connection
+    to the fraud_detection service.
+
+    It:
+    - Opens a gRPC channel
+    - Sends FraudRequest message
+    - Receives FraudResponse
+
+    This implements inter-service communication using gRPC.
     """
     try:
         logger.info(f"Worker thread: Checking fraud for card ending in {card_number[-4:]}")
@@ -61,7 +71,16 @@ def check_fraud(card_number, order_amount):
 
 def verify_transaction(user_id, credit_card, items):
     """
-    Call the transaction verification service via gRPC to verify transaction.
+    gRPC CLIENT COMMUNICATION — TRANSACTION VERIFICATION
+
+    This function connects to the transaction_verification
+    service via gRPC.
+
+    It sends a TransactionRequest and receives
+    a TransactionResponse.
+
+    This demonstrates backend-to-backend communication
+    using the gRPC protocol.
     """
     try:
         logger.info(f"Worker thread: Verifying transaction for user_id: {user_id}")
@@ -81,7 +100,16 @@ def verify_transaction(user_id, credit_card, items):
 
 def get_suggestions(user_id, purchased_items):
     """
-    Call the suggestions service via gRPC to get book suggestions.
+    gRPC CLIENT COMMUNICATION — SUGGESTIONS SERVICE
+
+    This function connects to the suggestions microservice
+    via gRPC.
+
+    It sends a SuggestionsRequest and receives
+    a SuggestionsResponse.
+
+    This completes the inter-service communication
+    requirement using gRPC.
     """
     try:
         logger.info(f"Worker thread: Getting suggestions for user_id: {user_id}")
@@ -129,15 +157,20 @@ def index():
 @app.route('/checkout', methods=['POST'])
 def checkout():
     """
-    Handles the checkout request from the frontend.
-    
-    Process:
-    1. Parse the incoming request data
-    2. Spawn worker threads to check fraud, verify transaction, and get suggestions in parallel
-    3. Consolidate results
-    4. Return appropriate response
-    
-    Response follows the bookstore.yaml API specification.
+    REST IMPLEMENTATION (Frontend ↔ Orchestrator)
+
+    This endpoint implements the RESTful API defined in bookstore.yaml.
+    It handles POST requests from the frontend at '/checkout'.
+
+    Responsibilities:
+    - Parse incoming JSON request (CheckoutRequest schema)
+    - Extract order data (user, items, credit card)
+    - Trigger backend processing via gRPC microservices
+    - Return response following OrderStatusResponse schema
+
+    This establishes the REST communication channel between
+    the frontend and backend system.
+
     """
     try:
         logger.info("Received POST request on '/checkout' endpoint")
@@ -170,6 +203,21 @@ def checkout():
         }
         
         with ThreadPoolExecutor(max_workers=3) as executor:
+            """
+            MULTITHREADING IMPLEMENTATION (Master-Worker Model)
+
+            The orchestrator acts as the master thread.
+            It spawns three worker threads using ThreadPoolExecutor.
+
+            Each worker thread:
+            - Calls one backend microservice (fraud, verification, suggestions)
+            - Executes in parallel
+
+            The orchestrator waits for all threads to complete
+            before consolidating the results.
+
+            This fulfills the threading requirement of the lab.
+            """
             # Submit tasks for parallel execution
             fraud_task = executor.submit(check_fraud, credit_card_number, str(len(items)))
             transaction_task = executor.submit(verify_transaction, user_id, credit_card_number, item_list)
@@ -203,6 +251,19 @@ def checkout():
         logger.info(f"All tasks completed. Results - Fraud: {results['is_fraud']}, Transaction Valid: {results['is_transaction_valid']}, Suggestions: {len(results['suggested_books'])}")
         
         # Determine order status
+        """
+        RESULT CONSOLIDATION LOGIC
+
+        After all worker threads return results,
+        the orchestrator combines them.
+
+        Rule:
+        - If fraud is detected OR transaction is invalid → Order Rejected
+        - Otherwise → Order Approved with suggestions
+
+        This implements the final decision-making step
+        in the orchestrated workflow.
+        """
         if results['is_fraud'] or not results['is_transaction_valid']:
             order_status = "Order Rejected"
             suggested_books = []

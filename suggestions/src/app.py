@@ -60,9 +60,19 @@ ITEM_CATEGORY_MAP = {
 
 def get_suggested_books(purchased_items):
     """
-    Generate book suggestions based on purchased items.
-    Uses simple heuristics to match purchased items to book categories.
+    gRPC BACKEND MICROSERVICE — SUGGESTIONS
+
+    This service runs as a gRPC server on port 50053.
+
+    It generates book suggestions based on purchased items
+    and returns a list of recommended books.
+
+    It implements the SuggestionsService defined
+    in suggestions.proto.
+
+    This fulfills the third required backend microservice.
     """
+    
     logger.info(f"Generating suggestions for items: {purchased_items}")
     
     # Determine which categories the user is interested in

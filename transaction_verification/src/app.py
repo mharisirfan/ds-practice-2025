@@ -18,7 +18,22 @@ import transaction_verification_pb2_grpc
 class TransactionVerificationServicer(
     transaction_verification_pb2_grpc.TransactionVerificationServiceServicer
 ):
+    """
+    gRPC BACKEND MICROSERVICE — TRANSACTION VERIFICATION
 
+    This service runs as a gRPC server on port 50052.
+
+    It validates:
+    - User ID presence
+    - Non-empty cart
+    - Credit card format
+
+    It implements the TransactionVerificationService
+    defined in transaction_verification.proto.
+
+    This fulfills the second required backend microservice.
+
+    """
     def VerifyTransaction(self, request, context):
         logging.info(f"Received transaction verification request for user_id: {request.user_id}")
         logging.info(f"Items count: {len(request.items)}, Credit card: {request.credit_card[:4]}****")

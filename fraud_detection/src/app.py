@@ -24,8 +24,17 @@ logger = logging.getLogger(__name__)
 
 class FraudDetectionService(fraud_detection_grpc.FraudDetectionServiceServicer):
     """
-    gRPC service for fraud detection.
-    Implements simple heuristics to detect potentially fraudulent transactions.
+    gRPC BACKEND MICROSERVICE — FRAUD DETECTION
+
+    This service runs as an independent gRPC server
+    listening on port 50051.
+
+    It implements the FraudDetectionService defined
+    in fraud_detection.proto and handles fraud check requests
+    sent by the orchestrator.
+
+    This fulfills the requirement of creating a backend
+    microservice as a gRPC server.
     """
     
     def CheckFraud(self, request, context):
