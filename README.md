@@ -15,7 +15,7 @@ graph TD
     subgraph "Orchestration Layer"
         B -->|REST API| C[Order Orchestrator<br/>Port: 5000<br/>Python/Flask]
     end    
-    subgraph "Processing Layer"
+    subgraph "Microservices Layer"
         C -->|gRPC| D[Fraud Detection<br/>Port: 50051]
         C -->|gRPC| E[Suggestions<br/>Port: 50053]
         C -->|gRPC| F[Transaction Verification<br/>Port: 50052]
