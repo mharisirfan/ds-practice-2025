@@ -63,13 +63,11 @@ graph TD
     N{Not fraud & verified?}
     N -->|No| O[Reject]
     N -->|Yes| P[Return order status<br/>Suggested Books]
-    O --> Q[response with<br/>suggested books]
     P --> Q
     end
 
     subgraph Frontend_
-    Q --> R[frontend]
-    R --> S[Display order confirmed page]
+    Q --> R[Display order confirmed page]
     end
 ```
 
