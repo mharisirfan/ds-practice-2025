@@ -3,7 +3,7 @@
 ## Online Bookstore System 
 A book ordering system built with microservices architecture demonstrating REST, gRPC, concurrent processing, and proper system documentation.
 
-🎯 Project Overview
+### Project Overview
 This project implements a distributed book ordering system where users can submit orders that are processed through multiple backend services. The system showcases key distributed systems concepts including inter-service communication, concurrent processing, and comprehensive logging.
 
 ### System Architecture
