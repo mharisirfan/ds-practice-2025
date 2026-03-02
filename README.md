@@ -1,14 +1,46 @@
-# Distributed Systems @ University of Tartu
+# Distributed Systems 2026 @ University of Tartu
 
-This repository contains the initial code for the practice sessions of the Distributed Systems course at the University of Tartu.
+## Online Bookstore System 
+A book ordering system built with microservices architecture demonstrating REST, gRPC, concurrent processing, and proper system documentation.
 
-## Getting started
+🎯 Project Overview
+This project implements a distributed book ordering system where users can submit orders that are processed through multiple backend services. The system showcases key distributed systems concepts including inter-service communication, concurrent processing, and comprehensive logging.
 
-### Overview
+### System Architecture
+graph TD
+    subgraph "Client Layer"
+        A[Web Browser] --> B[Frontend Server<br/>Port: 3000<br/>Node.js/Express]
+    end
+    
+    subgraph "Orchestration Layer"
+        B -->|REST API| C[Order Orchestrator<br/>Port: 5000<br/>Python/Flask]
+    end
+    
+    subgraph "Processing Layer"
+        C -->|gRPC| D[Inventory Service<br/>Port: 50051]
+        C -->|gRPC| E[Payment Processor<br/>Port: 50052]
+        C -->|gRPC| F[Shipping Calculator<br/>Port: 50053]
+    end
+    
+    subgraph "Data Layer"
+        D --> G[(Inventory DB<br/>SQLite)]
+        E --> H[(Transactions DB<br/>SQLite)]
+        F --> I[(Shipping Rates<br/>JSON)]
+    end
+The architecture follows a layered approach with clear separation of concerns. The frontend communicates with the orchestrator via REST, which then coordinates three gRPC services concurrently.
 
-The code consists of multiple services. Each service is located in a separate folder. The `frontend` service folder contains a Dockerfile and the code for an example bookstore application. Each backend service folder (e.g. `orchestrator` or `fraud_detection`) contains a Dockerfile, a requirements.txt file and the source code of the service. During the practice sessions, you will implement the missing functionality in these backend services, or extend the backend with new services.
 
-There is also a `utils` folder that contains some helper code or specifications that are used by multiple services. Check the `utils` folder for more information.
+
+
+
+
+
+
+
+
+
+///////
+
 
 ### Running the code with Docker Compose [recommended]
 
