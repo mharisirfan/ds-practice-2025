@@ -16,15 +16,11 @@ graph TD
         B -->|REST API| C[Order Orchestrator<br/>Port: 5000<br/>Python/Flask]
     end    
     subgraph "Processing Layer"
-        C -->|gRPC| D[Inventory Service<br/>Port: 50051]
-        C -->|gRPC| E[Payment Processor<br/>Port: 50052]
-        C -->|gRPC| F[Shipping Calculator<br/>Port: 50053]
+        C -->|gRPC| D[Fraud Detection<br/>Port: 50051]
+        C -->|gRPC| E[Suggestions<br/>Port: 50053]
+        C -->|gRPC| F[Transaction Verification<br/>Port: 50052]
     end
-    subgraph "Data Layer"
-        D --> G[(Inventory DB<br/>SQLite)]
-        E --> H[(Transactions DB<br/>SQLite)]
-        F --> I[(Shipping Rates<br/>JSON)]
-    end
+
 ```
 The architecture follows a layered approach with clear separation of concerns. The frontend communicates with the orchestrator via REST, which then coordinates three gRPC services concurrently.
 
