@@ -34,7 +34,6 @@ graph TD
 
     subgraph Orchestrator
         B --> C[checkout]
-        M[orchestrator]
     end
 
     subgraph "Fraud Detection Microservice"
