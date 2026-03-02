@@ -29,7 +29,7 @@ The architecture follows a layered approach with clear separation of concerns. T
 ```mermaid
 graph TD
     subgraph Frontend
-        A[Pushed the submit button] --> B[orchestrator]
+        B[Pushed the submit button]
     end
 
     subgraph Orchestrator
