@@ -7,6 +7,7 @@ A book ordering system built with microservices architecture demonstrating REST,
 This project implements a distributed book ordering system where users can submit orders that are processed through multiple backend services. The system showcases key distributed systems concepts including inter-service communication, concurrent processing, and comprehensive logging.
 
 ### System Architecture
+
 graph TD
     subgraph "Client Layer"
         A[Web Browser] --> B[Frontend Server<br/>Port: 3000<br/>Node.js/Express]
@@ -24,6 +25,7 @@ graph TD
         E --> H[(Transactions DB<br/>SQLite)]
         F --> I[(Shipping Rates<br/>JSON)]
     end
+
 The architecture follows a layered approach with clear separation of concerns. The frontend communicates with the orchestrator via REST, which then coordinates three gRPC services concurrently.
 
 
