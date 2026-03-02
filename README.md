@@ -25,8 +25,53 @@ graph TD
 The architecture follows a layered approach with clear separation of concerns. The frontend communicates with the orchestrator via REST, which then coordinates three gRPC services concurrently.
 
 
+### System Workflow
+```mermaid
+graph TD
+    subgraph Frontend
+        A[Pushed the submit button] --> B[orchestrator]
+    end
 
+    subgraph Orchestrator
+        B --> C[checkout]
+        M[orchestrator]
+    end
 
+    subgraph "Fraud Detection Microservice"
+        D[DetectFraud] --> G[the user data<br/>the credit card info]
+        G --> J[fraud detection<br/>is not fraud?]
+    end
+
+    subgraph "Transaction Verification Microservice"
+        E[VerifyTransaction] --> H[the user data is<br/>all filled in?<br/>the credit card info is<br/>in the correct format?]
+        H --> K[transaction verification]
+    end
+
+    subgraph "Suggestions Microservice"
+        F[SuggestBook] --> I[the order items are<br/>not empty?<br/>Randomly pick up books<br/>from a static book list.]
+        I --> L[book suggestion]
+    end
+
+    C --> D
+    C --> E
+    C --> F
+
+    J --> M
+    K --> M
+    L --> M
+
+    M --> N{Not fraud & verified?}
+
+    N -->|No| O[Reject]
+    N -->|Yes| P[Return order status<br/>Suggested Books]
+
+    O --> Q[response with<br/>suggested books]
+    P --> Q
+
+    Q --> R[frontend]
+
+    R --> S[Display order confirmed page]
+```
 
 
 
