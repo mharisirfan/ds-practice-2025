@@ -55,19 +55,19 @@ graph TD
     C --> E
     C --> F
 
-    J --> M
-    K --> M
-    L --> M
+    J --> N
+    K --> N
+    L --> N
 
-    subgraph Orchestrator
-    M --> N{Not fraud & verified?}
+    subgraph Orchestrator_
+    N{Not fraud & verified?}
     N -->|No| O[Reject]
     N -->|Yes| P[Return order status<br/>Suggested Books]
     O --> Q[response with<br/>suggested books]
     P --> Q
     end
 
-    subgraph Frontend
+    subgraph Frontend_
     Q --> R[frontend]
     R --> S[Display order confirmed page]
     end
