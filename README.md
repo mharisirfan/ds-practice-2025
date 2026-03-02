@@ -10,18 +10,15 @@ This project implements a distributed book ordering system where users can submi
 graph TD
     subgraph "Client Layer"
         A[Web Browser] --> B[Frontend Server<br/>Port: 3000<br/>Node.js/Express]
-    end
-    
+    end 
     subgraph "Orchestration Layer"
         B -->|REST API| C[Order Orchestrator<br/>Port: 5000<br/>Python/Flask]
-    end
-    
+    end    
     subgraph "Processing Layer"
         C -->|gRPC| D[Inventory Service<br/>Port: 50051]
         C -->|gRPC| E[Payment Processor<br/>Port: 50052]
         C -->|gRPC| F[Shipping Calculator<br/>Port: 50053]
     end
-    
     subgraph "Data Layer"
         D --> G[(Inventory DB<br/>SQLite)]
         E --> H[(Transactions DB<br/>SQLite)]
