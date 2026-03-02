@@ -61,7 +61,7 @@ graph TD
 
     subgraph Orchestrator_
     N{Not fraud & verified?}
-    N -->|No| O[Reject]
+    N -->|No| O[Reject<br/>Show Error]
     N -->|Yes| P[Return order status<br/>Suggested Books]
     P --> Q
     end
