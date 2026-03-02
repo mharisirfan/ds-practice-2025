@@ -9,7 +9,7 @@ This project implements a distributed book ordering system where users can submi
 ### System Architecture
 ```mermaid
 graph TD
-    subgraph "Client Layer"
+    subgraph "Frontend Layer"
         A[Web Browser] --> B[Frontend Server<br/>Port: 3000<br/>Node.js/Express]
     end 
     subgraph "Orchestration Layer"
