@@ -10,7 +10,7 @@ This project implements a distributed book ordering system where users can submi
 ```mermaid
 graph TD
     subgraph "Frontend Layer"
-        A[Web Browser] --> B[Frontend Server<br/>Port: 3000<br/>Node.js/Express]
+        A[Web Browser] --> B[Frontend Server<br/>Port: 8080<br/>]
     end 
     subgraph "Orchestration Layer"
         B -->|REST API| C[Order Orchestrator<br/>Port: 5000<br/>Python/Flask]
