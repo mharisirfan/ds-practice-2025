@@ -63,11 +63,10 @@ graph TD
     N{Not fraud & verified?}
     N -->|No| O[Reject<br/>Show Error]
     N -->|Yes| P[Return order status<br/>Suggested Books]
-    P --> Q
     end
 
     subgraph Frontend_
-    Q --> R[Display order confirmed page]
+    P --> R[Display order confirmed page]
     end
 ```
 ### Microservices Details
