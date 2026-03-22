@@ -14,17 +14,31 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x15\x66raud_detection.proto\x12\x0f\x66raud_detection\"9\n\x0c\x46raudRequest\x12\x13\n\x0b\x63\x61rd_number\x18\x01 \x01(\t\x12\x14\n\x0corder_amount\x18\x02 \x01(\t\"!\n\rFraudResponse\x12\x10\n\x08is_fraud\x18\x01 \x01(\t2d\n\x15\x46raudDetectionService\x12K\n\nCheckFraud\x12\x1d.fraud_detection.FraudRequest\x1a\x1e.fraud_detection.FraudResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x15\x66raud_detection.proto\x12\x0f\x66raud_detection\"s\n\x0bVectorClock\x12\x36\n\x05\x63lock\x18\x01 \x03(\x0b\x32\'.fraud_detection.VectorClock.ClockEntry\x1a,\n\nClockEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x05:\x02\x38\x01\"\xc0\x01\n\x10InitOrderRequest\x12\x10\n\x08order_id\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\x14\n\x0cuser_contact\x18\x03 \x01(\t\x12\x14\n\x0cuser_address\x18\x04 \x01(\t\x12\x13\n\x0b\x63\x61rd_number\x18\x05 \x01(\t\x12\x14\n\x0corder_amount\x18\x06 \x01(\t\x12\x32\n\x0cvector_clock\x18\x07 \x01(\x0b\x32\x1c.fraud_detection.VectorClock\"i\n\x11InitOrderResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x32\n\x0cvector_clock\x18\x03 \x01(\x0b\x32\x1c.fraud_detection.VectorClock\"T\n\x0c\x45ventRequest\x12\x10\n\x08order_id\x18\x01 \x01(\t\x12\x32\n\x0cvector_clock\x18\x02 \x01(\x0b\x32\x1c.fraud_detection.VectorClock\"`\n\rEventResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x32\n\x0cvector_clock\x18\x03 \x01(\x0b\x32\x1c.fraud_detection.VectorClock\"_\n\x11\x43learOrderRequest\x12\x10\n\x08order_id\x18\x01 \x01(\t\x12\x38\n\x12\x66inal_vector_clock\x18\x02 \x01(\x0b\x32\x1c.fraud_detection.VectorClock\"j\n\x12\x43learOrderResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x32\n\x0cvector_clock\x18\x03 \x01(\x0b\x32\x1c.fraud_detection.VectorClock2\xe4\x02\n\x15\x46raudDetectionService\x12R\n\tInitOrder\x12!.fraud_detection.InitOrderRequest\x1a\".fraud_detection.InitOrderResponse\x12O\n\x0e\x43heckUserFraud\x12\x1d.fraud_detection.EventRequest\x1a\x1e.fraud_detection.EventResponse\x12O\n\x0e\x43heckCardFraud\x12\x1d.fraud_detection.EventRequest\x1a\x1e.fraud_detection.EventResponse\x12U\n\nClearOrder\x12\".fraud_detection.ClearOrderRequest\x1a#.fraud_detection.ClearOrderResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'fraud_detection_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_FRAUDREQUEST']._serialized_start=42
-  _globals['_FRAUDREQUEST']._serialized_end=99
-  _globals['_FRAUDRESPONSE']._serialized_start=101
-  _globals['_FRAUDRESPONSE']._serialized_end=134
-  _globals['_FRAUDDETECTIONSERVICE']._serialized_start=136
-  _globals['_FRAUDDETECTIONSERVICE']._serialized_end=236
+  _globals['_VECTORCLOCK_CLOCKENTRY']._loaded_options = None
+  _globals['_VECTORCLOCK_CLOCKENTRY']._serialized_options = b'8\001'
+  _globals['_VECTORCLOCK']._serialized_start=42
+  _globals['_VECTORCLOCK']._serialized_end=157
+  _globals['_VECTORCLOCK_CLOCKENTRY']._serialized_start=113
+  _globals['_VECTORCLOCK_CLOCKENTRY']._serialized_end=157
+  _globals['_INITORDERREQUEST']._serialized_start=160
+  _globals['_INITORDERREQUEST']._serialized_end=352
+  _globals['_INITORDERRESPONSE']._serialized_start=354
+  _globals['_INITORDERRESPONSE']._serialized_end=459
+  _globals['_EVENTREQUEST']._serialized_start=461
+  _globals['_EVENTREQUEST']._serialized_end=545
+  _globals['_EVENTRESPONSE']._serialized_start=547
+  _globals['_EVENTRESPONSE']._serialized_end=643
+  _globals['_CLEARORDERREQUEST']._serialized_start=645
+  _globals['_CLEARORDERREQUEST']._serialized_end=740
+  _globals['_CLEARORDERRESPONSE']._serialized_start=742
+  _globals['_CLEARORDERRESPONSE']._serialized_end=848
+  _globals['_FRAUDDETECTIONSERVICE']._serialized_start=851
+  _globals['_FRAUDDETECTIONSERVICE']._serialized_end=1207
 # @@protoc_insertion_point(module_scope)

@@ -3,25 +3,19 @@ import os
 import grpc
 from concurrent import futures
 import logging
+import threading
 
-# This set of lines are needed to import the gRPC stubs.
-# The path of the stubs is relative to the current file, or absolute inside the container.
-# Change these lines only if strictly needed.
-FILE = __file__ if '__file__' in globals() else os.getenv("PYTHONFILE", "")
-suggestions_grpc_path = os.path.abspath(os.path.join(FILE, '../../../utils/pb/suggestions'))
+FILE = __file__ if "__file__" in globals() else os.getenv("PYTHONFILE", "")
+suggestions_grpc_path = os.path.abspath(os.path.join(FILE, "../../../utils/pb/suggestions"))
 sys.path.insert(0, suggestions_grpc_path)
-import suggestions_pb2
-import suggestions_pb2_grpc
+import suggestions_pb2 as pb
+import suggestions_pb2_grpc as pb_grpc
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+SERVICE_KEY = "suggestions"
 
-# Sample book catalog with categories
 BOOK_CATALOG = {
     "fiction": [
         {"id": "B001", "title": "The Great Gatsby", "author": "F. Scott Fitzgerald"},
@@ -49,7 +43,6 @@ BOOK_CATALOG = {
     ],
 }
 
-# Map items to book categories for intelligent suggestions
 ITEM_CATEGORY_MAP = {
     "science_book": "science",
     "history_book": "history",
@@ -58,103 +51,116 @@ ITEM_CATEGORY_MAP = {
 }
 
 
+def merge_clocks(*clocks):
+    merged = {}
+    for clock in clocks:
+        for key, value in clock.items():
+            merged[key] = max(merged.get(key, 0), int(value))
+    return merged
+
+
+def clock_lte(local_clock, final_clock):
+    keys = set(local_clock.keys()) | set(final_clock.keys())
+    for key in keys:
+        if local_clock.get(key, 0) > final_clock.get(key, 0):
+            return False
+    return True
+
+
 def get_suggested_books(purchased_items):
-    """
-    gRPC BACKEND MICROSERVICE — SUGGESTIONS
-
-    This service runs as a gRPC server on port 50053.
-
-    It generates book suggestions based on purchased items
-    and returns a list of recommended books.
-
-    It implements the SuggestionsService defined
-    in suggestions.proto.
-
-    This fulfills the third required backend microservice.
-    """
-    
-    logger.info(f"Generating suggestions for items: {purchased_items}")
-    
-    # Determine which categories the user is interested in
     interested_categories = set()
-    
     for item in purchased_items:
-        item_lower = item.lower()
         for item_type, category in ITEM_CATEGORY_MAP.items():
-            if item_type in item_lower:
+            if item_type in item.lower():
                 interested_categories.add(category)
                 break
-    
-    # If no specific category found, suggest a mix
+
     if not interested_categories:
         interested_categories = set(BOOK_CATALOG.keys())
-    
-    logger.info(f"Determined interested categories: {interested_categories}")
-    
-    # Select 2 books from each interested category
-    suggestions = []
+
+    output = []
     for category in interested_categories:
-        category_books = BOOK_CATALOG.get(category, [])
-        # Take first 2 books from each category
-        suggestions.extend(category_books[:2])
-    
-    # Limit to 5 suggestions max
-    suggestions = suggestions[:5]
-    logger.info(f"Generated {len(suggestions)} book suggestions")
-    
-    return suggestions
+        output.extend(BOOK_CATALOG.get(category, [])[:2])
+    return output[:5]
 
 
-class SuggestionsServicer(suggestions_pb2_grpc.SuggestionsServiceServicer):
-    """
-    gRPC service for book suggestions.
-    Provides intelligent book recommendations based on user purchase history.
-    """
-    
-    def GetSuggestions(self, request, context):
-        """
-        RPC method to get book suggestions for a user.
-        
-        Args:
-            request: SuggestionsRequest with user_id and purchased_items
-            context: gRPC context
-        
-        Returns:
-            SuggestionsResponse with list of suggested books
-        """
-        logger.info(f"Received suggestion request for user_id: {request.user_id}")
-        logger.info(f"Purchased items: {list(request.purchased_items)}")
-        
-        try:
-            # Get suggested books
-            suggested_books = get_suggested_books(list(request.purchased_items))
-            
-            # Create response
-            response = suggestions_pb2.SuggestionsResponse()
-            for book in suggested_books:
-                book_pb = response.suggested_books.add()
-                book_pb.book_id = book['id']
-                book_pb.title = book['title']
-                book_pb.author = book['author']
-            
-            logger.info(f"Returning {len(response.suggested_books)} suggestions to user {request.user_id}")
-            return response
-            
-        except Exception as e:
-            logger.error(f"Error generating suggestions: {str(e)}")
-            return suggestions_pb2.SuggestionsResponse()
+class SuggestionsServicer(pb_grpc.SuggestionsServiceServicer):
+    def __init__(self):
+        self.order_cache = {}
+        self.order_clocks = {}
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def _clock_msg(clock_dict):
+        msg = pb.VectorClock()
+        msg.clock.update(clock_dict)
+        return msg
+
+    def _merge_incoming(self, order_id, incoming_clock):
+        current = self.order_clocks.get(order_id, {})
+        merged = merge_clocks(current, incoming_clock)
+        self.order_clocks[order_id] = merged
+        return dict(merged)
+
+    def _tick(self, order_id, event_name):
+        clock = self.order_clocks.get(order_id, {})
+        clock[SERVICE_KEY] = clock.get(SERVICE_KEY, 0) + 1
+        self.order_clocks[order_id] = clock
+        logger.info("Event %s | order_id=%s | VC=%s", event_name, order_id, clock)
+        return dict(clock)
+
+    def InitOrder(self, request, context):
+        with self.lock:
+            self.order_cache[request.order_id] = {
+                "user_id": request.user_id,
+                "purchased_items": list(request.purchased_items),
+            }
+            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            clock = self._tick(request.order_id, "init")
+
+        return pb.InitOrderResponse(success=True, message="Suggestions order initialized", vector_clock=self._clock_msg(clock))
+
+    def GenerateSuggestions(self, request, context):
+        with self.lock:
+            data = self.order_cache.get(request.order_id)
+            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            clock = self._tick(request.order_id, "f_generate_suggestions")
+
+        if data is None:
+            return pb.SuggestionsResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(clock))
+
+        books = get_suggested_books(data["purchased_items"])
+        response = pb.SuggestionsResponse(ok=True, message="Suggestions generated", vector_clock=self._clock_msg(clock))
+        for book in books:
+            item = response.suggested_books.add()
+            item.book_id = book["id"]
+            item.title = book["title"]
+            item.author = book["author"]
+
+        return response
+
+    def ClearOrder(self, request, context):
+        with self.lock:
+            local = self.order_clocks.get(request.order_id, {})
+            final_clock = dict(request.final_vector_clock.clock)
+            if not clock_lte(local, final_clock):
+                logger.error("ClearOrder rejected | order_id=%s | local=%s | VCf=%s", request.order_id, local, final_clock)
+                return pb.ClearOrderResponse(
+                    success=False,
+                    message="Local VC is greater than VCf; refusing to clear",
+                    vector_clock=self._clock_msg(local),
+                )
+
+            self.order_cache.pop(request.order_id, None)
+            self.order_clocks.pop(request.order_id, None)
+
+        logger.info("ClearOrder success | order_id=%s | VCf=%s", request.order_id, final_clock)
+        return pb.ClearOrderResponse(success=True, message="Order state cleared", vector_clock=self._clock_msg(final_clock))
 
 
 def serve():
-    """
-    Start the gRPC server for the Suggestions service.
-    Listens on port 50053.
-    """
-    logger.info("Starting Suggestions Service...")
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    suggestions_pb2_grpc.add_SuggestionsServiceServicer_to_server(
-        SuggestionsServicer(), server
-    )
+    pb_grpc.add_SuggestionsServiceServicer_to_server(SuggestionsServicer(), server)
     server.add_insecure_port("[::]:50053")
     server.start()
     logger.info("Suggestions Service started on port 50053")

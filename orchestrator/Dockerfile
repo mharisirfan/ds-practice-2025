@@ -11,5 +11,7 @@ COPY ./orchestrator/requirements.txt .
 # Install the Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# RUN pip install debugpy
+
 # Set the command to run the container
 CMD python utils/other/hotreload.py "orchestrator/src/app.py"
