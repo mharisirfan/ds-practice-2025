@@ -25,6 +25,11 @@ sys.path.insert(0, suggestions_grpc_path)
 import suggestions_pb2 as sug_pb
 import suggestions_pb2_grpc as sug_grpc
 
+order_queue_grpc_path = os.path.abspath(os.path.join(FILE, "../../../utils/pb/order_queue"))
+sys.path.insert(0, order_queue_grpc_path)
+import order_queue_pb2 as oq_pb
+import order_queue_pb2_grpc as oq_grpc
+
 import grpc
 from flask import Flask, request
 from flask_cors import CORS
@@ -67,6 +72,12 @@ def to_fraud_clock(clock):
 
 def to_sug_clock(clock):
     msg = sug_pb.VectorClock()
+    msg.clock.update(clock)
+    return msg
+
+
+def to_oq_clock(clock):
+    msg = oq_pb.VectorClock()
     msg.clock.update(clock)
     return msg
 
@@ -160,6 +171,21 @@ def rpc_f_generate_suggestions(order_id, clock):
         response = stub.GenerateSuggestions(sug_pb.EventRequest(order_id=order_id, vector_clock=to_sug_clock(clock)))
     books = [{"bookId": b.book_id, "title": b.title, "author": b.author} for b in response.suggested_books]
     return response.ok, response.message, books, dict(response.vector_clock.clock)
+
+
+def rpc_enqueue_order(order_id, user_id, items, clock):
+    with grpc.insecure_channel("order_queue:50060") as channel:
+        stub = oq_grpc.OrderQueueServiceStub(channel)
+        request = oq_pb.EnqueueRequest(
+            order=oq_pb.QueuedOrder(
+                order_id=order_id,
+                user_id=user_id,
+                items=items,
+                vector_clock=to_oq_clock(clock),
+            )
+        )
+        response = stub.Enqueue(request)
+    return response.success, response.message
 
 
 def rpc_clear_transaction(order_id, final_clock):
@@ -396,6 +422,15 @@ def checkout():
             final_clock = final_result["clock"]
             status = "Order Approved"
             books = final_result["suggested_books"]
+
+        if status == "Order Approved":
+            enq_ok, enq_msg = rpc_enqueue_order(order_id, user_id, item_list, final_clock)
+            if not enq_ok:
+                logger.error("Enqueue failed | order_id=%s | message=%s", order_id, enq_msg)
+                status = "Order Rejected"
+                books = []
+            else:
+                logger.info("Order enqueued | order_id=%s", order_id)
 
         final_clock = tick_orchestrator(final_clock)
         logger.info("Flow finished | order_id=%s | status=%s | VCf=%s", order_id, status, final_clock)

@@ -23,7 +23,6 @@ services:
     ports:
       # Expose port 8081 on the host, and map port 5000 of the container to port 8081 on the host
       - 8081:5000
-      - "5678:5678" # Expose the debugpy port for remote debugging
     environment:
       # Pass the environment variables to the container
       # The PYTHONUNBUFFERED environment variable ensures that the output from the application is logged to the console
@@ -36,6 +35,8 @@ services:
       - ./utils:/app/utils
       # Mount the orchestrator/src directory in the current directory to the /app/orchestrator/src directory in the container
       - ./orchestrator/src:/app/orchestrator/src
+    depends_on:
+      - order_queue
   fraud_detection:
     build:
       # Use the current directory as the build context
@@ -43,9 +44,6 @@ services:
       context: ./
       # Use the Dockerfile in the fraud_detection directorys
       dockerfile: ./fraud_detection/Dockerfile
-    ports:
-      # Expose port 50051 on the host, and map port 50051 of the container to port 50051 on the host
-      - 50051:50051
     environment:
       # Pass the environment variables to the container
       # The PYTHONUNBUFFERED environment variable ensures that the output from the application is logged to the console
@@ -65,9 +63,6 @@ services:
       context: ./
       # Use the Dockerfile in the transaction_verification directory
       dockerfile: ./transaction_verification/Dockerfile
-    ports:
-      # Expose port 50052 on the host, and map port 50052 of the container to port 50052 on the host
-      - 50052:50052
     environment:
       # Pass the environment variables to the container
       # The PYTHONUNBUFFERED environment variable ensures that the output from the application is logged to the console
@@ -87,9 +82,6 @@ services:
       context: ./
       # Use the Dockerfile in the suggestions directory
       dockerfile: ./suggestions/Dockerfile
-    ports:
-      # Expose port 50053 on the host, and map port 50053 of the container to port 50053 on the host
-      - 50053:50053
     environment:
       # Pass the environment variables to the container
       # The PYTHONUNBUFFERED environment variable ensures that the output from the application is logged to the console
@@ -102,3 +94,50 @@ services:
       - ./utils:/app/utils
       # Mount the suggestions/src directory in the current directory to the /app/suggestions/src directory in the container
       - ./suggestions/src:/app/suggestions/src
+
+  order_queue:
+    build:
+      context: ./
+      dockerfile: ./order_queue/Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/order_queue/src/app.py
+    volumes:
+      - ./utils:/app/utils
+      - ./order_queue/src:/app/order_queue/src
+
+  order_executor_1:
+    build:
+      context: ./
+      dockerfile: ./order_executor/Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/order_executor/src/app.py
+      - EXECUTOR_ID=executor-1
+      - ORDER_QUEUE_ADDR=order_queue:50060
+      - EXECUTOR_PORT=50070
+      - LEASE_SECONDS=2
+      - POLL_SECONDS=1
+    depends_on:
+      - order_queue
+    volumes:
+      - ./utils:/app/utils
+      - ./order_executor/src:/app/order_executor/src
+
+  order_executor_2:
+    build:
+      context: ./
+      dockerfile: ./order_executor/Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/order_executor/src/app.py
+      - EXECUTOR_ID=executor-2
+      - ORDER_QUEUE_ADDR=order_queue:50060
+      - EXECUTOR_PORT=50071
+      - LEASE_SECONDS=2
+      - POLL_SECONDS=1
+    depends_on:
+      - order_queue
+    volumes:
+      - ./utils:/app/utils
+      - ./order_executor/src:/app/order_executor/src
