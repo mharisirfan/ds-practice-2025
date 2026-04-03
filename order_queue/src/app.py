@@ -19,15 +19,18 @@ logger = logging.getLogger(__name__)
 
 class OrderQueueService(pb_grpc.OrderQueueServiceServicer):
     def __init__(self):
+        """Keep queued orders and centralized lease-based leader election state."""
         self._queue = deque()
         self._leader_id = ""
         self._leader_expiry = 0.0
         self._lock = threading.Lock()
 
     def _lease_valid(self):
+        """Check whether the current leadership lease is still active."""
         return self._leader_id and time.time() < self._leader_expiry
 
     def Enqueue(self, request, context):
+        """Insert a verified order into the queue for executor processing."""
         order = request.order
         with self._lock:
             self._queue.append(
@@ -44,6 +47,7 @@ class OrderQueueService(pb_grpc.OrderQueueServiceServicer):
         return pb.EnqueueResponse(success=True, message="Order enqueued")
 
     def TryAcquireLeadership(self, request, context):
+        """Grant or renew leadership lease for one executor at a time."""
         now = time.time()
         lease_seconds = max(1, int(request.lease_seconds) if request.lease_seconds else 2)
 
@@ -75,6 +79,7 @@ class OrderQueueService(pb_grpc.OrderQueueServiceServicer):
         )
 
     def Dequeue(self, request, context):
+        """Allow dequeue only to the active leader, enforcing mutual exclusion."""
         with self._lock:
             if not self._lease_valid() or self._leader_id != request.executor_id:
                 return pb.DequeueResponse(success=False, has_order=False, message="Requester is not active leader")
@@ -93,6 +98,7 @@ class OrderQueueService(pb_grpc.OrderQueueServiceServicer):
 
 
 def serve():
+    """Start gRPC server for order queue service."""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     pb_grpc.add_OrderQueueServiceServicer_to_server(OrderQueueService(), server)
     server.add_insecure_port("[::]:50060")

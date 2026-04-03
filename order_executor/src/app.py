@@ -30,18 +30,21 @@ GRPC_PORT = int(os.getenv("EXECUTOR_PORT", "50070"))
 
 class SharedState:
     def __init__(self):
+        """Track executor leadership and status for health visibility."""
         self.leader_id = ""
         self.is_leader = False
         self.last_status = "starting"
         self.lock = threading.Lock()
 
     def update(self, leader_id, is_leader, status):
+        """Update local status snapshot shared with Ping endpoint."""
         with self.lock:
             self.leader_id = leader_id
             self.is_leader = is_leader
             self.last_status = status
 
     def snapshot(self):
+        """Read a consistent snapshot of executor status fields."""
         with self.lock:
             return self.leader_id, self.is_leader, self.last_status
 
@@ -51,6 +54,7 @@ STATE = SharedState()
 
 class OrderExecutorService(ex_grpc.OrderExecutorServiceServicer):
     def Ping(self, request, context):
+        """Report executor health and current leader information."""
         leader_id, is_leader, status = STATE.snapshot()
         return ex_pb.PingResponse(
             executor_id=EXECUTOR_ID,
@@ -61,6 +65,7 @@ class OrderExecutorService(ex_grpc.OrderExecutorServiceServicer):
 
 
 def executor_loop():
+    """Continuously compete for leadership, dequeue, and execute at most one order at a time."""
     while True:
         try:
             with grpc.insecure_channel(QUEUE_ADDR) as channel:
@@ -110,6 +115,7 @@ def executor_loop():
 
 
 def serve():
+    """Start background executor worker and expose lightweight gRPC endpoint."""
     worker = threading.Thread(target=executor_loop, daemon=True)
     worker.start()
 

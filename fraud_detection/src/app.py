@@ -19,6 +19,7 @@ SERVICE_KEY = "fraud_detection"
 
 
 def merge_clocks(*clocks):
+    """Merge vector clocks by taking the component-wise maximum."""
     merged = {}
     for clock in clocks:
         for key, value in clock.items():
@@ -27,6 +28,7 @@ def merge_clocks(*clocks):
 
 
 def clock_lte(local_clock, final_clock):
+    """Return True when local clock is less than or equal to VCf for all keys."""
     keys = set(local_clock.keys()) | set(final_clock.keys())
     for key in keys:
         if local_clock.get(key, 0) > final_clock.get(key, 0):
@@ -36,23 +38,27 @@ def clock_lte(local_clock, final_clock):
 
 class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
     def __init__(self):
+        """Store per-order cached payload and per-order vector clock state."""
         self.order_cache = {}
         self.order_clocks = {}
         self.lock = threading.Lock()
 
     @staticmethod
     def _clock_msg(clock_dict):
+        """Convert dictionary clock into protobuf vector clock message."""
         msg = pb.VectorClock()
         msg.clock.update(clock_dict)
         return msg
 
     def _merge_incoming(self, order_id, incoming_clock):
+        """Merge incoming clock with local order clock before processing an event."""
         current = self.order_clocks.get(order_id, {})
         merged = merge_clocks(current, incoming_clock)
         self.order_clocks[order_id] = merged
         return dict(merged)
 
     def _tick(self, order_id, event_name):
+        """Advance local service component for the current order event and log it."""
         clock = self.order_clocks.get(order_id, {})
         clock[SERVICE_KEY] = clock.get(SERVICE_KEY, 0) + 1
         self.order_clocks[order_id] = clock
@@ -60,6 +66,7 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
         return dict(clock)
 
     def InitOrder(self, request, context):
+        """Cache order input and initialize vector-clock tracking for this service."""
         with self.lock:
             self.order_cache[request.order_id] = {
                 "user_id": request.user_id,
@@ -74,6 +81,7 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
         return pb.InitOrderResponse(success=True, message="Fraud order initialized", vector_clock=self._clock_msg(clock))
 
     def CheckUserFraud(self, request, context):
+        """Event d: run user-level fraud checks after user-data validation path."""
         with self.lock:
             data = self.order_cache.get(request.order_id)
             self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
@@ -89,6 +97,7 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
         return pb.EventResponse(ok=True, message="User fraud check passed", vector_clock=self._clock_msg(clock))
 
     def CheckCardFraud(self, request, context):
+        """Event e: run card-level fraud checks after c and d dependencies."""
         with self.lock:
             data = self.order_cache.get(request.order_id)
             self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
@@ -116,6 +125,7 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
         return pb.EventResponse(ok=True, message="Card fraud check passed", vector_clock=self._clock_msg(clock))
 
     def ClearOrder(self, request, context):
+        """Clear cached order state only when local VC is causally <= VCf."""
         with self.lock:
             local = self.order_clocks.get(request.order_id, {})
             final_clock = dict(request.final_vector_clock.clock)
@@ -135,6 +145,7 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
 
 
 def serve():
+    """Start gRPC server for fraud detection service."""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     pb_grpc.add_FraudDetectionServiceServicer_to_server(FraudDetectionService(), server)
     server.add_insecure_port("[::]:50051")

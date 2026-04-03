@@ -21,6 +21,7 @@ SERVICE_KEY = "transaction_verification"
 
 
 def merge_clocks(*clocks):
+    """Merge vector clocks by taking the component-wise maximum."""
     merged = {}
     for clock in clocks:
         for key, value in clock.items():
@@ -29,6 +30,7 @@ def merge_clocks(*clocks):
 
 
 def clock_lte(local_clock, final_clock):
+    """Return True when local clock is less than or equal to VCf for all keys."""
     keys = set(local_clock.keys()) | set(final_clock.keys())
     for key in keys:
         if local_clock.get(key, 0) > final_clock.get(key, 0):
@@ -38,23 +40,27 @@ def clock_lte(local_clock, final_clock):
 
 class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServicer):
     def __init__(self):
+        """Store per-order cached payload and per-order vector clock state."""
         self.order_cache = {}
         self.order_clocks = {}
         self.lock = threading.Lock()
 
     @staticmethod
     def _clock_msg(clock_dict):
+        """Convert dictionary clock into protobuf vector clock message."""
         msg = pb.VectorClock()
         msg.clock.update(clock_dict)
         return msg
 
     def _merge_incoming(self, order_id, incoming_clock):
+        """Merge incoming clock with local order clock before processing an event."""
         current = self.order_clocks.get(order_id, {})
         merged = merge_clocks(current, incoming_clock)
         self.order_clocks[order_id] = merged
         return dict(merged)
 
     def _tick(self, order_id, event_name):
+        """Advance local service component for the current order event and log it."""
         clock = self.order_clocks.get(order_id, {})
         clock[SERVICE_KEY] = clock.get(SERVICE_KEY, 0) + 1
         self.order_clocks[order_id] = clock
@@ -62,6 +68,7 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
         return dict(clock)
 
     def InitOrder(self, request, context):
+        """Cache order input and initialize vector-clock tracking for this service."""
         with self.lock:
             self.order_cache[request.order_id] = {
                 "user_id": request.user_id,
@@ -80,6 +87,7 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
         )
 
     def VerifyItems(self, request, context):
+        """Event a: verify the order contains at least one item."""
         with self.lock:
             data = self.order_cache.get(request.order_id)
             self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
@@ -94,6 +102,7 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
         return pb.EventResponse(ok=True, message="Items verified", vector_clock=self._clock_msg(clock))
 
     def VerifyUserData(self, request, context):
+        """Event b: verify required user information fields are present."""
         with self.lock:
             data = self.order_cache.get(request.order_id)
             self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
@@ -115,6 +124,7 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
         return pb.EventResponse(ok=True, message="User data verified", vector_clock=self._clock_msg(clock))
 
     def VerifyCardFormat(self, request, context):
+        """Event c: verify card format after upstream dependency is satisfied."""
         with self.lock:
             data = self.order_cache.get(request.order_id)
             self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
@@ -129,6 +139,7 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
         return pb.EventResponse(ok=True, message="Credit card format verified", vector_clock=self._clock_msg(clock))
 
     def ClearOrder(self, request, context):
+        """Clear cached order state only when local VC is causally <= VCf."""
         with self.lock:
             local = self.order_clocks.get(request.order_id, {})
             final_clock = dict(request.final_vector_clock.clock)
@@ -152,6 +163,7 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
 
 
 def serve():
+    """Start gRPC server for transaction verification service."""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     pb_grpc.add_TransactionVerificationServiceServicer_to_server(TransactionVerificationServicer(), server)
     server.add_insecure_port("[::]:50052")
