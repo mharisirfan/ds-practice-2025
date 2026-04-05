@@ -4,7 +4,7 @@ import json
 import logging
 import uuid
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, CancelledError
 
 FILE = __file__ if "__file__" in globals() else os.getenv("PYTHONFILE", "")
 
@@ -25,6 +25,11 @@ sys.path.insert(0, suggestions_grpc_path)
 import suggestions_pb2 as sug_pb
 import suggestions_pb2_grpc as sug_grpc
 
+queue_grpc_path = os.path.abspath(os.path.join(FILE, "../../../utils/pb/order_queue"))
+sys.path.insert(0, queue_grpc_path)
+import order_queue_pb2 as q_pb
+import order_queue_pb2_grpc as q_grpc
+
 import grpc
 from flask import Flask, request
 from flask_cors import CORS
@@ -33,7 +38,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 ORCH_KEY = "orchestrator"
-
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -256,6 +260,15 @@ def run_join_event(stop_event, dep1_future, dep2_future, name, func):
         stop_event.set()
     return make_result(name, ok, message, out_clock)
 
+def rpc_enqueue_order(order_id):
+    try:
+        with grpc.insecure_channel("order_queue:50054") as channel:
+            stub = q_grpc.OrderQueueServiceStub(channel)
+            response = stub.Enqueue(q_pb.EnqueueRequest(order_id=order_id))
+            return response.success
+    except Exception as e:
+        logger.error(f"Failed to enqueue order {order_id}: {e}")
+        return False
 
 @app.route("/", methods=["GET"])
 def index():
@@ -287,29 +300,17 @@ def checkout():
         with ThreadPoolExecutor(max_workers=3) as init_pool:
             init_a = init_pool.submit(
                 rpc_init_transaction,
-                order_id,
-                user_id,
-                user_contact,
-                user_address,
-                credit_card,
-                item_list,
+                order_id, user_id, user_contact, user_address, credit_card, item_list,
                 tick_orchestrator(base_clock),
             )
             init_b = init_pool.submit(
                 rpc_init_fraud,
-                order_id,
-                user_id,
-                user_contact,
-                user_address,
-                credit_card,
-                order_amount,
+                order_id, user_id, user_contact, user_address, credit_card, order_amount,
                 tick_orchestrator(base_clock),
             )
             init_c = init_pool.submit(
                 rpc_init_suggestions,
-                order_id,
-                user_id,
-                item_list,
+                order_id, user_id, item_list,
                 tick_orchestrator(base_clock),
             )
 
@@ -329,73 +330,60 @@ def checkout():
         init_clock = merge_clocks(base_clock, clock_a, clock_b, clock_c)
         stop_event = threading.Event()
         failure = None
+        
+        # ---> THE FIX: Track the highest clock seen across ALL threads <---
+        accumulated_clock = init_clock
 
         with ThreadPoolExecutor(max_workers=6) as pool:
-            future_a = pool.submit(
-                lambda: make_result(
-                    "a",
-                    *rpc_a_verify_items(order_id, tick_orchestrator(init_clock)),
-                )
-            )
-            future_b = pool.submit(
-                lambda: make_result(
-                    "b",
-                    *rpc_b_verify_user_data(order_id, tick_orchestrator(init_clock)),
-                )
-            )
-            future_c = pool.submit(
-                run_chain_event,
-                stop_event,
-                future_a,
-                "c",
-                lambda c_clock: rpc_c_verify_card_format(order_id, c_clock),
-            )
-            future_d = pool.submit(
-                run_chain_event,
-                stop_event,
-                future_b,
-                "d",
-                lambda d_clock: rpc_d_check_user_fraud(order_id, d_clock),
-            )
-            future_e = pool.submit(
-                run_join_event,
-                stop_event,
-                future_c,
-                future_d,
-                "e",
-                lambda e_clock: rpc_e_check_card_fraud(order_id, e_clock),
-            )
-            future_f = pool.submit(
-                run_chain_event_with_payload,
-                stop_event,
-                future_e,
-                "f",
-                lambda f_clock: rpc_f_generate_suggestions(order_id, f_clock),
-            )
+            future_a = pool.submit(lambda: make_result("a", *rpc_a_verify_items(order_id, tick_orchestrator(init_clock))))
+            future_b = pool.submit(lambda: make_result("b", *rpc_b_verify_user_data(order_id, tick_orchestrator(init_clock))))
+            future_c = pool.submit(run_chain_event, stop_event, future_a, "c", lambda c_clock: rpc_c_verify_card_format(order_id, c_clock))
+            future_d = pool.submit(run_chain_event, stop_event, future_b, "d", lambda d_clock: rpc_d_check_user_fraud(order_id, d_clock))
+            future_e = pool.submit(run_join_event, stop_event, future_c, future_d, "e", lambda e_clock: rpc_e_check_card_fraud(order_id, e_clock))
+            future_f = pool.submit(run_chain_event_with_payload, stop_event, future_e, "f", lambda f_clock: rpc_f_generate_suggestions(order_id, f_clock))
 
             futures = [future_a, future_b, future_c, future_d, future_e, future_f]
             for done in as_completed(futures):
-                result = done.result(timeout=10)
-                logger.info("Event %s complete | ok=%s | msg=%s | VC=%s", result["name"], result["ok"], result["message"], result["clock"])
-                if not result["ok"] and failure is None:
-                    failure = result
-                    stop_event.set()
-                    for future in futures:
-                        future.cancel()
+                try:
+                    result = done.result(timeout=10)
+                    
+                    # Merge EVERY returning clock into our global tracker
+                    accumulated_clock = merge_clocks(accumulated_clock, result["clock"])
+                    
+                    logger.info("Event %s complete | ok=%s | msg=%s | VC=%s", result["name"], result["ok"], result["message"], result["clock"])
+                    
+                    if not result["ok"] and failure is None:
+                        failure = result
+                        stop_event.set()
+                        for future in futures:
+                            future.cancel()
+                            
+                # We must catch CancelledError because we call future.cancel() above.
+                # Cancelled futures will throw this when yielded by as_completed.
+                except CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.error("Thread pool execution error: %s", exc)
 
             if failure is None:
                 final_result = future_f.result(timeout=10)
             else:
-                final_result = make_result("f", False, "Not completed", failure["clock"])
+                final_result = make_result("f", False, "Not completed", accumulated_clock)
 
         if failure is not None:
-            final_clock = failure["clock"]
+            # We now use the accumulated clock instead of just failure["clock"]
+            final_clock = accumulated_clock
             status = "Order Rejected"
             books = []
         else:
-            final_clock = final_result["clock"]
+            final_clock = accumulated_clock
             status = "Order Approved"
             books = final_result["suggested_books"]
+
+            enqueue_success = rpc_enqueue_order(order_id)
+            if not enqueue_success:
+                logger.error("Order verified but failed to enqueue!")
+                status = "Order Error (Queue Down)"
 
         final_clock = tick_orchestrator(final_clock)
         logger.info("Flow finished | order_id=%s | status=%s | VCf=%s", order_id, status, final_clock)

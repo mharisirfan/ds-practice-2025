@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package executor;
+
+service ExecutorService {
+    // Bully Algorithm RPCs
+    rpc Election (ElectionRequest) returns (ElectionResponse);
+    rpc Coordinator (CoordinatorRequest) returns (CoordinatorResponse);
+    rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message ElectionRequest {
+    int32 sender_id = 1;
+}
+
+message ElectionResponse {
+    bool success = 1; // True means "I am alive and bigger, step down"
+}
+
+message CoordinatorRequest {
+    int32 leader_id = 1;
+}
+
+message CoordinatorResponse {
+    bool success = 1;
+}
+
+message HeartbeatRequest {
+    int32 leader_id = 1;
+}
+
+message HeartbeatResponse {
+    bool success = 1;
+}

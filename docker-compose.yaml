@@ -102,3 +102,58 @@ services:
       - ./utils:/app/utils
       # Mount the suggestions/src directory in the current directory to the /app/suggestions/src directory in the container
       - ./suggestions/src:/app/suggestions/src
+      
+  order_queue:
+      build:
+        context: ./
+        dockerfile: ./order_queue/Dockerfile # You will need to create this simple Dockerfile
+      ports:
+        - 50054:50054
+      environment:
+        - PYTHONUNBUFFERED=TRUE
+        - PYTHONFILE=/app/order_queue/src/app.py
+      volumes:
+        - ./utils:/app/utils
+        - ./order_queue/src:/app/order_queue/src
+
+  executor1:
+    build:
+      context: ./
+      dockerfile: ./executor/Dockerfile # You will need to create this simple Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/executor/src/app.py
+      - EXECUTOR_ID=1
+      - PORT=50055
+      - PEERS=1:executor1:50055,2:executor2:50056,3:executor3:50057
+    volumes:
+      - ./utils:/app/utils
+      - ./executor/src:/app/executor/src
+
+  executor2:
+    build:
+      context: ./
+      dockerfile: ./executor/Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/executor/src/app.py
+      - EXECUTOR_ID=2
+      - PORT=50056
+      - PEERS=1:executor1:50055,2:executor2:50056,3:executor3:50057
+    volumes:
+      - ./utils:/app/utils
+      - ./executor/src:/app/executor/src
+
+  executor3:
+    build:
+      context: ./
+      dockerfile: ./executor/Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/executor/src/app.py
+      - EXECUTOR_ID=3
+      - PORT=50057
+      - PEERS=1:executor1:50055,2:executor2:50056,3:executor3:50057
+    volumes:
+      - ./utils:/app/utils
+      - ./executor/src:/app/executor/src
