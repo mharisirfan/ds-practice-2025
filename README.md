@@ -10,17 +10,28 @@ This project implements a distributed book ordering system where users can submi
 ```mermaid
 graph TD
     subgraph "Frontend Layer"
-        A[Web Browser] --> B[Frontend Server<br/>Port: 8080<br/>]
+        A[Web Browser] -->|REST API| B[Frontend Server<br/>Port: 8080]
     end 
+
     subgraph "Orchestration Layer"
-        B -->|REST API| C[Order Orchestrator<br/>Port: 5000<br/>Python/Flask]
+        B -->|POST<br/>checkout| C[Order Orchestrator<br/>Flask: 5000]
     end    
+
     subgraph "Microservices Layer"
         C -->|gRPC| D[Fraud Detection<br/>Port: 50051]
-        C -->|gRPC| E[Suggestions<br/>Port: 50053]
-        C -->|gRPC| F[Transaction Verification<br/>Port: 50052]
+        C -->|gRPC| E[Transaction Verification<br/>Port: 50052]
+        C -->|gRPC| F[Suggestions<br/>Port: 50053]
     end
 
+    subgraph "Execution Layer"
+        C -->|gRPC: Enqueue| G[Order Queue Service<br/>Port: 50060]
+        
+        G <-->|gRPC: TryAcquireLeadership & Dequeue| H1[Order Executor 1<br/>Port: 50070]
+        G <-->|gRPC: TryAcquireLeadership & Dequeue| H2[Order Executor 2<br/>Port: 50071]
+        
+        %% Represents the lease-based leader state held in the queue
+        H1 -.->|Competes for Lease| H2
+    end
 ```
 The architecture follows a layered approach with clear separation of concerns. The frontend communicates with the orchestrator via REST, which then coordinates three gRPC services concurrently.
 
