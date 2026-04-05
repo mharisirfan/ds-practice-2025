@@ -77,7 +77,7 @@ graph TD
     end
 
     subgraph Frontend_
-    P --> R[Display order confirmed page]
+    P --> R[Display order<br/>confirmed page]
     end
 ```
 ### Microservices Details
@@ -88,10 +88,162 @@ graph TD
 | **Transaction Verification** | 50052 | gRPC | Validates that user data is all filled in and credit card information is in the correct format |
 | **Suggestions** | 50053 | gRPC | Randomly picks books from a book list to recommend to customers after successful checkout |
 
+## Vector Clocks Diagram
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator (o)
+    participant TV as Transaction Verif. (t)
+    participant FD as Fraud Detection (f)
+    participant S as Suggestions (s)
+    participant Q as Order Queue
+
+    Note over O: POST /checkout<br/>base_clock = {o: 1}
+
+    %% 1. PARALLEL INITIALIZATION
+    par Init TV
+        O->>TV: InitOrder {o:2}
+        Note over TV: Merges & Ticks (t:1)
+        TV-->>O: {o:2, t:1}
+    and Init FD
+        O->>FD: InitOrder {o:2}
+        Note over FD: Merges & Ticks (f:1)
+        FD-->>O: {o:2, f:1}
+    and Init Sug
+        O->>S: InitOrder {o:2}
+        Note over S: Merges & Ticks (s:1)
+        S-->>O: {o:2, s:1}
+    end
+    Note over O: merge_clocks() from all 3<br/>init_clock = {o:2, t:1, f:1, s:1}
+
+    %% 2. PARALLEL EVENTS A & B
+    par Thread A
+        Note over O: ticks for A: {o:3, t:1, f:1, s:1}
+        O->>TV: VerifyItems (A)
+    and Thread B
+        Note over O: ticks for B: {o:3, t:1, f:1, s:1}
+        O->>TV: VerifyUserData (B)
+    end
+    
+    %% TV processes sequentially due to self.lock
+    Note over TV: TV handles A first (lock acquired).<br/>Internal VC becomes {o:3, t:2, f:1, s:1}
+    TV-->>O: Return A {o:3, t:2, f:1, s:1}
+    Note over TV: TV handles B next.<br/>Merges B's {o:3, t:1...} with internal {t:2}.<br/>Internal VC becomes {o:3, t:3, f:1, s:1}
+    TV-->>O: Return B {o:3, t:3, f:1, s:1}
+
+    %% 3. CHAINED EVENTS C & D
+    par Thread C (Depends on A)
+        Note over O: run_chain_event ticks A's clock
+        O->>TV: VerifyCardFormat (C) {o:4, t:2, f:1, s:1}
+        Note over TV: Merges {t:2} with internal {t:3}.<br/>Ticks t -> {o:4, t:4, f:1, s:1}
+        TV-->>O: Return C {o:4, t:4, f:1, s:1}
+    and Thread D (Depends on B)
+        Note over O: run_chain_event ticks B's clock
+        O->>FD: CheckUserFraud (D) {o:4, t:3, f:1, s:1}
+        Note over FD: Merges & Ticks (f:2)
+        FD-->>O: Return D {o:4, t:3, f:2, s:1}
+    end
+
+    %% 4. THE JOIN EVENT (E)
+    Note over O: run_join_event(C, D)<br/>merges C {t:4, f:1} and D {t:3, f:2}<br/>Merged: {o:4, t:4, f:2, s:1}
+    Note over O: Ticks Orch -> {o:5, t:4, f:2, s:1}
+    O->>FD: CheckCardFraud (E) {o:5, t:4, f:2, s:1}
+    Note over FD: Merges & Ticks (f:3)
+    FD-->>O: Return E {o:5, t:4, f:3, s:1}
+
+    %% 5. FINAL EVENT (F)
+    Note over O: run_chain_event(E)
+    O->>S: GenerateSuggestions (F) {o:6, t:4, f:3, s:1}
+    Note over S: Merges & Ticks (s:2)
+    S-->>O: Return F {o:6, t:4, f:3, s:2}
+
+    %% 6. ENQUEUE & CLEAR
+    Note over O: Accumulates all returning threads.<br/>latest_clock = {o:6, t:4, f:3, s:2}
+    O->>Q: Enqueue(latest_clock)
+    Q-->>O: Enqueued
+
+    Note over O: ticks latest_clock -> final_clock<br/>VCf: {o:7, t:4, f:3, s:2}
+    O->>TV: ClearOrder (VCf)
+    O->>FD: ClearOrder (VCf)
+    O->>S: ClearOrder (VCf)
+```
+This sequence diagram illustrates how vector clocks track causality and asynchronous events across the microservices during a single checkout request. It highlights the Orchestrator branching out concurrent requests, how the Transaction Verification service sequentially merges and increments these incoming clocks to establish a strict mathematical order of operations, and how the final merged clock state is ultimately used to safely enqueue the order and clear the distributed caches.
+
+## Leader Election Diagram
+```mermaid
+graph TD
+    classDef localState fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#000
+    classDef rpcCall fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px,color:#000
+    classDef queueLogic fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000
+    classDef action fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#000
+    classDef err fill:#ffebee,stroke:#d32f2f,stroke-width:2px,color:#000
+
+    Start((Start executor_loop))
+    Acq[Call TryAcquireLeadership]
+    Standby[State: 'standby'<br/>Sleep POLL_SECONDS]
+    Leader[State: 'leader']
+    ReqDeq[Call Dequeue]
+    Lost[State: 'lost-leadership'<br/>Sleep POLL_SECONDS]
+    Idle[State: 'leader' idle<br/>Sleep POLL_SECONDS]
+    Exec[Log Execution<br/>Simulate Work 0.5s]
+    Err[State: 'error'<br/>Sleep POLL_SECONDS]
+
+    class Standby,Leader,Lost,Idle localState;
+    class Acq,ReqDeq rpcCall;
+    class Exec action;
+    class Err err;
+
+    Start --> Acq
+
+    subgraph "Order Queue Service (Lease Management)"
+        Q1{Is Lease Expired?<br/>OR<br/>Am I already the Leader?}
+        Q2[Grant Lease<br/>Extend Expiry by 2s]
+        Q3[Deny Lease<br/>Keep current Leader]
+        
+        class Q1,Q2,Q3 queueLogic;
+        
+        Acq --> Q1
+        Q1 -->|Yes| Q2
+        Q1 -->|No| Q3
+    end
+
+    Q3 -->|granted = False| Standby
+    Q2 -->|granted = True| Leader
+    
+    Leader --> ReqDeq
+
+    subgraph "Order Queue Service (Mutual Exclusion)"
+        Q4{Is Requester still<br/>the Active Leader?}
+        Q5[success = False]
+        Q6{Is Queue Empty?}
+        Q7[success = True<br/>has_order = False]
+        Q8[success = True<br/>has_order = True<br/>Pop Order from Deque]
+        
+        class Q4,Q5,Q6,Q7,Q8 queueLogic;
+
+        ReqDeq --> Q4
+        Q4 -->|No| Q5
+        Q4 -->|Yes| Q6
+        Q6 -->|Yes| Q7
+        Q6 -->|No| Q8
+    end
+
+    Q5 --> Lost
+    Q7 --> Idle
+    Q8 --> Exec
+
+    Standby --> Acq
+    Lost --> Acq
+    Idle --> Acq
+    Exec --> Acq
+
+    Acq -.->|gRPC Exception| Err
+    ReqDeq -.->|gRPC Exception| Err
+    Err -.->|Recover & Retry| Acq
+```
+This flowchart maps the finite state machine of an order executor as it continuously loops to compete for and process queued orders. It visualizes a centralized, lease-based leader election algorithm managed by the order queue to enforce mutual exclusion: first validating whether the executor can acquire or renew a two-second leadership lease, and second, confirming the executor remains the active leader at the exact moment of dequeueing. This mechanism safely prevents multiple replicas from concurrently processing the same transaction.
 
 
-
-///////
+---
 
 
 ### Running the code with Docker Compose [recommended]
