@@ -90,10 +90,19 @@
             event.preventDefault();
 
             const formData = new FormData(event.target);
+            const userAddress = [
+                formData.get('billingStreet'),
+                formData.get('billingCity'),
+                formData.get('billingState'),
+                formData.get('billingZip'),
+                formData.get('billingCountry')
+            ].filter(Boolean).join(', ');
+
             const data = {
                 user: {
                     name: formData.get('name'),
                     contact: formData.get('contact'),
+                    address: userAddress,
                 },
                 creditCard: {
                     number: formData.get('creditCard'),
@@ -115,7 +124,7 @@
             };
 
             try {
-                const response = await fetch('http://localhost:8081/checkout', {
+                const response = await fetch('http://localhost:18081/checkout', {
                     method: 'POST',
                     body: JSON.stringify(data),
                 });
