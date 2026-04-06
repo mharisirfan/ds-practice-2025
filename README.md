@@ -2,6 +2,22 @@
 
 This repository contains the initial code for the practice sessions of the Distributed Systems course at the University of Tartu.
 
+## 📊 Vector Clock System Documentation
+
+This system uses **Vector Clocks** to maintain causal ordering across microservices:
+
+- **[Vector Clocks System Design](./VECTOR_CLOCKS_SYSTEM_DESIGN.md)** - Complete system architecture with vector clock flows and examples
+- **[Vector Clock Detailed Trace](./VECTOR_CLOCK_DIAGRAM.md)** - Full timeline with all vector clock values at each step
+
+### Quick Overview
+The system processes orders through 6 events (a-f) across 3 services with proper vector clock synchronization:
+```
+Event A (verify items)  ──┐
+Event B (verify user)   ──┼─→ Event E (merge) ──→ Event F (suggestions) ──→ Enqueue
+Event C (card format)   ──┤                ↑
+Event D (fraud check)   ──┘────────────────┘
+```
+
 ## Getting started
 
 ### Overview
