@@ -139,81 +139,37 @@ graph TB
 This sequence diagram illustrates how vector clocks track causality and asynchronous events across the microservices during a single checkout request. It highlights the Orchestrator branching out concurrent requests, how the Transaction Verification service sequentially merges and increments these incoming clocks to establish a strict mathematical order of operations, and how the final merged clock state is ultimately used to safely enqueue the order and clear the distributed caches.
 
 ## Leader Election Diagram
+## 3. Leader Election and Mutual Exclusion
+
 ```mermaid
-graph TD
-    classDef localState fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#000
-    classDef rpcCall fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px,color:#000
-    classDef queueLogic fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000
-    classDef action fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#000
-    classDef err fill:#ffebee,stroke:#d32f2f,stroke-width:2px,color:#000
+sequenceDiagram
+    participant E1 as Executor-1
+    participant E2 as Executor-2
+    participant Q as Order Queue
 
-    Start((Start executor_loop))
-    Acq[Call TryAcquireLeadership]
-    Standby[State: 'standby'<br/>Sleep POLL_SECONDS]
-    Leader[State: 'leader']
-    ReqDeq[Call Dequeue]
-    Lost[State: 'lost-leadership'<br/>Sleep POLL_SECONDS]
-    Idle[State: 'leader' idle<br/>Sleep POLL_SECONDS]
-    Exec[Log Execution<br/>Simulate Work 0.5s]
-    Err[State: 'error'<br/>Sleep POLL_SECONDS]
-
-    class Standby,Leader,Lost,Idle localState;
-    class Acq,ReqDeq rpcCall;
-    class Exec action;
-    class Err err;
-
-    Start --> Acq
-
-    subgraph "Order Queue Service (Lease Management)"
-        Q1{Is Lease Expired?<br/>OR<br/>Am I already the Leader?}
-        Q2[Grant Lease<br/>Extend Expiry by 2s]
-        Q3[Deny Lease<br/>Keep current Leader]
-        
-        class Q1,Q2,Q3 queueLogic;
-        
-        Acq --> Q1
-        Q1 -->|Yes| Q2
-        Q1 -->|No| Q3
+    loop Every POLL_SECONDS
+        E1->>Q: TryAcquireLeadership(executor-1, lease=2s)
+        Q-->>E1: granted=true, leader=executor-1
     end
 
-    Q3 -->|granted = False| Standby
-    Q2 -->|granted = True| Leader
-    
-    Leader --> ReqDeq
-
-    subgraph "Order Queue Service (Mutual Exclusion)"
-        Q4{Is Requester still<br/>the Active Leader?}
-        Q5[success = False]
-        Q6{Is Queue Empty?}
-        Q7[success = True<br/>has_order = False]
-        Q8[success = True<br/>has_order = True<br/>Pop Order from Deque]
-        
-        class Q4,Q5,Q6,Q7,Q8 queueLogic;
-
-        ReqDeq --> Q4
-        Q4 -->|No| Q5
-        Q4 -->|Yes| Q6
-        Q6 -->|Yes| Q7
-        Q6 -->|No| Q8
+    loop Every POLL_SECONDS
+        E2->>Q: TryAcquireLeadership(executor-2, lease=2s)
+        Q-->>E2: granted=false, leader=executor-1
     end
 
-    Q5 --> Lost
-    Q7 --> Idle
-    Q8 --> Exec
+    E1->>Q: Dequeue(executor-1)
+    Q-->>E1: allowed (leader only)
 
-    Standby --> Acq
-    Lost --> Acq
-    Idle --> Acq
-    Exec --> Acq
+    Note over Q: Mutual exclusion: only current lease holder can dequeue.
 
-    Acq -.->|gRPC Exception| Err
-    ReqDeq -.->|gRPC Exception| Err
-    Err -.->|Recover & Retry| Acq
+    Note over E1,E2: If E1 lease expires or E1 fails, E2 can acquire leadership.
+
+    E2->>Q: TryAcquireLeadership(executor-2)
+    Q-->>E2: granted=true
+    E2->>Q: Dequeue(executor-2)
+    Q-->>E2: allowed
 ```
-This flowchart maps the finite state machine of an order executor as it continuously loops to compete for and process queued orders. It visualizes a centralized, lease-based leader election algorithm managed by the order queue to enforce mutual exclusion: first validating whether the executor can acquire or renew a two-second leadership lease, and second, confirming the executor remains the active leader at the exact moment of dequeueing. This mechanism safely prevents multiple replicas from concurrently processing the same transaction.
-
-
----
+Our leader-election mechanism is lease-based and dynamically supports N executors (N > 2), not just two fixed replicas. Any executor instance with a unique executor_id can compete for leadership by calling TryAcquireLeadership; the order_queue grants leadership to only one active lease holder at a time, so mutual exclusion is preserved for dequeue operations. The system is resilient to failures because if the current leader crashes or stops renewing, its lease expires and another executor automatically becomes leader on the next polling cycle. This design is centralized, which makes coordination simple and deterministic, but also introduces trade-offs: the queue service is a potential single point of failure and bottleneck compared to decentralized approaches.
 
 
 ### Running the code with Docker Compose [recommended]
