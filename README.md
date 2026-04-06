@@ -112,7 +112,7 @@ flowchart TD
 
     Q --> EXEC[Leader Executor dequeues and executes order]
 
-    EXEC --> CLR[Final VCf broadcast clear to all 3 services]
+    EXEC --> CLR[Final VCf broadcast clear to all 3 services (Bonus Point) ]
     R --> CLR
 
     CLR --> RESP[Return final response to frontend]
@@ -152,7 +152,7 @@ graph TB
     subgraph Queue ["QUEUE & CLEAR PHASE"]
         Enq["Enqueue Order<br/>(Order Queue)<br/>VC in: (1,3,2,1,0)<br/>VC out: (1,3,2,1,1)"]
         
-        Clear["Final Clear Broadcast<br/>VCf = (2,3,2,1,1)<br/>Clear sent to all services **Bonus Point** <br/>with final vector clock"]
+        Clear["Final Clear Broadcast<br/>VCf = (2,3,2,1,1)<br/>Clear sent to all services <br/>with final vector clock"]
     end
     
     Result["✓ Order Processed<br/>All state cleaned up"]
