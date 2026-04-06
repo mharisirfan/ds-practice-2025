@@ -87,6 +87,7 @@ graph TD
 | **Fraud Detection** | 50051 | gRPC | Analyzes user data and credit card information to determine if a transaction is fraudulent using rule-based detection |
 | **Transaction Verification** | 50052 | gRPC | Validates that user data is all filled in and credit card information is in the correct format |
 | **Suggestions** | 50053 | gRPC | Randomly picks books from a book list to recommend to customers after successful checkout |
+| **Executor** | 50070 | gRPC | Manages concurrent execution of service calls using thread pools, dispatches tasks to services, and aggregates results |
 
 ## Vector Clocks Diagram
 ```mermaid
