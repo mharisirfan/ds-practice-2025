@@ -80,6 +80,44 @@ graph TD
     P --> R[Display order<br/>confirmed page]
     end
 ```
+## End-to-End System Flow (Checkpoint2)
+
+```mermaid
+flowchart TD
+    U[User fills Checkout Form] --> F[Frontend POST /checkout]
+    F --> O[Orchestrator /checkout]
+
+    O --> I1[InitOrder to Transaction Verification]
+    O --> I2[InitOrder to Fraud Detection]
+    O --> I3[InitOrder to Suggestions]
+
+    I1 --> M[Orchestrator merges init vector clocks]
+    I2 --> M
+    I3 --> M
+
+    M --> A[Event a: VerifyItems]
+    M --> B[Event b: VerifyUserData]
+
+    A --> C[Event c: VerifyCardFormat]
+    B --> D[Event d: CheckUserFraud]
+
+    C --> E[Event e: CheckCardFraud]
+    D --> E
+
+    E --> G[Event f: GenerateSuggestions]
+
+    G --> DEC{All checks passed?}
+    DEC -- Yes --> Q[Enqueue order in Order Queue]
+    DEC -- No --> R[Reject Order]
+
+    Q --> EXEC[Leader Executor dequeues and executes order]
+
+    EXEC --> CLR[Final VCf broadcast clear to all 3 services]
+    R --> CLR
+
+    CLR --> RESP[Return final response to frontend]
+```
+
 ### Microservices Details
 
 | Service | Port | Protocol | Description |
@@ -139,8 +177,6 @@ graph TB
 This sequence diagram illustrates how vector clocks track causality and asynchronous events across the microservices during a single checkout request. It highlights the Orchestrator branching out concurrent requests, how the Transaction Verification service sequentially merges and increments these incoming clocks to establish a strict mathematical order of operations, and how the final merged clock state is ultimately used to safely enqueue the order and clear the distributed caches.
 
 ## Leader Election Diagram
-## 3. Leader Election and Mutual Exclusion
-
 ```mermaid
 sequenceDiagram
     participant E1 as Executor-1
