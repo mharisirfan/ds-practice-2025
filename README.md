@@ -14,7 +14,7 @@ graph TD
     end 
 
     subgraph "Orchestration Layer"
-        B -->|POST<br/>checkout| C[Order Orchestrator<br/>Flask: 5000]
+        B -->|POST<br/>checkout| C[Order Orchestrator<br/>Port: 5000]
     end    
 
     subgraph "Microservices Layer"
