@@ -112,7 +112,7 @@ flowchart TD
 
     Q --> EXEC[Leader Executor dequeues and executes order]
 
-    EXEC --> CLR[Final VCf broadcast clear to all 3 services (Bonus Point) ]
+    EXEC --> CLR[Final VCf broadcast clear to all 3 services. *Bonus Point]
     R --> CLR
 
     CLR --> RESP[Return final response to frontend]
