@@ -205,6 +205,54 @@ sequenceDiagram
     E2->>Q: Dequeue(executor-2)
     Q-->>E2: allowed
 ```
+
+```mermaid
+sequenceDiagram
+    participant E1 as Executor-1
+    participant Q as Order Queue
+    participant E2 as Executor-2
+
+    Note over E1,E2: Snapshot 1: Executor-1 Acquires Leadership
+    E1->>Q: TryAcquireLeadership(executor-1, lease=2s)
+    Q-->>E1: granted=true, leader_id=executor-1
+    E2->>Q: TryAcquireLeadership(executor-2, lease=2s)
+    Q-->>E2: granted=false, leader_id=executor-1
+    E1->>Q: Dequeue(executor-1)
+    Q-->>E1: Order1 (allowed - leader only)
+    Note over Q: leader_expiry = now + 2s
+```
+```mermaid
+sequenceDiagram
+    participant E1 as Executor-1
+    participant Q as Order Queue
+    participant E2 as Executor-2
+
+    Note over E1,E2: Snapshot 2: Executor-1 Lease Expires / Fails
+    Note over E1: (Time: leader_expiry reached)
+    E1->>Q: TryAcquireLeadership(executor-1, lease=2s)
+    Q-->>E1: granted=false, leader_id=NONE
+    Note over Q: Lease expired - no current leader
+    E2->>Q: TryAcquireLeadership(executor-2, lease=2s)
+    Q-->>E2: granted=true, leader_id=executor-2
+    Note over Q: leader_expiry = now + 2s (E2's lease)
+```
+```mermaid
+sequenceDiagram
+    participant E1 as Executor-1
+    participant Q as Order Queue
+    participant E2 as Executor-2
+
+    Note over E1,E2: Snapshot 3: Executor-2 Acquires Leadership (Failover)
+    E2->>Q: TryAcquireLeadership(executor-2, lease=2s)
+    Q-->>E2: granted=true, leader_id=executor-2
+    E1->>Q: TryAcquireLeadership(executor-1, lease=2s)
+    Q-->>E1: granted=false, leader_id=executor-2
+    E2->>Q: Dequeue(executor-2)
+    Q-->>E2: Order2 (allowed - leader only)
+    Note over Q: leader_expiry = now + 2s
+    Note over E1: Standby mode: retry TryAcquireLeadership after POLL_SECONDS
+```
+
 Our leader-election mechanism is lease-based and dynamically supports N executors (N > 2), not just two fixed replicas. Any executor instance with a unique executor_id can compete for leadership by calling TryAcquireLeadership; the order_queue grants leadership to only one active lease holder at a time, so mutual exclusion is preserved for dequeue operations. The system is resilient to failures because if the current leader crashes or stops renewing, its lease expires and another executor automatically becomes leader on the next polling cycle. **This design is centralized**, which makes coordination simple and deterministic, but also introduces trade-offs: the queue service is a potential single point of failure and bottleneck compared to decentralized approaches. **Bonus Point**
 
 ## Bonus Points Implementation
