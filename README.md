@@ -90,45 +90,48 @@ graph TD
 
 ## Vector Clocks Diagram
 ```mermaid
-sequenceDiagram
-    participant O as Orchestrator (o)
-    participant TV as Transaction Verif. (t)
-    participant FD as Fraud Detection (f)
-    participant S as Suggestions (s)
-    participant Q as Order Queue
-
-    Note over O: POST /checkout<br/>base_clock = {o: 1}
-
-    %% 1. PARALLEL INITIALIZATION
-    par Init TV
-        O->>TV: InitOrder {o:2}
-        Note over TV: Merges & Ticks (t:1)
-        TV-->>O: {o:2, t:1}
-    and Init FD
-        O->>FD: InitOrder {o:2}
-        Note over FD: Merges & Ticks (f:1)
-        FD-->>O: {o:2, f:1}
-    and Init Sug
-        O->>S: InitOrder {o:2}
-        Note over S: Merges & Ticks (s:1)
-        S-->>O: {o:2, s:1}
-    end
-    Note over O: merge_clocks() from all 3<br/>init_clock = {o:2, t:1, f:1, s:1}
-
-    %% 2. PARALLEL EVENTS A & B
-    par Thread A
-        Note over O: ticks for A: {o:3, t:1, f:1, s:1}
-        O->>TV: VerifyItems (A)
-    and Thread B
-        Note over O: ticks for B: {o:3, t:1, f:1, s:1}
-        O->>TV: VerifyUserData (B)
+graph TB
+    subgraph Init ["INITIALIZATION PHASE"]
+        init["Init with VC=(1,0,0,0,0)"]
     end
     
-    %% TV processes sequentially due to self.lock
-    Note over TV: TV handles A first (lock acquired).<br/>Internal VC becomes {o:3, t:2, f:1, s:1}
-    TV-->>O: Return A {o:3, t:2, f:1, s:1}
-    Note over TV: TV handles B next.<br/>Merges B's {o:3, t:1...} with internal {t:2}.<br/>Internal VC becomes {o:3, t:3, f:1, s:1}
-    TV-->>O: Return B {o:3, t:3, f:1, s:1}
+    subgraph EventsPhase ["PARALLEL EVENT PROCESSING"]
+        A["Event A: VerifyItems<br/>(Transaction Verification)<br/>VC in: (1,0,0,0,0)<br/>VC out: (1,1,0,0,0)"]
+        B["Event B: VerifyUserData<br/>(Transaction Verification)<br/>VC in: (1,0,0,0,0)<br/>VC out: (1,2,0,0,0)"]
+        
+        C["Event C: VerifyCardFormat<br/>(Transaction Verification)<br/>Depends on A<br/>VC in: (1,2,0,0,0)<br/>VC out: (1,3,0,0,0)"]
+        
+        D["Event D: CheckUserFraud<br/>(Fraud Detection)<br/>Depends on B<br/>VC in: (1,2,0,0,0)<br/>VC out: (1,2,1,0,0)"]
+        
+        E["Event E: CheckCardFraud<br/>(Fraud Detection)<br/>MERGE(C,D)<br/>VC in: (1,3,1,0,0)<br/>VC out: (1,3,2,0,0)"]
+        
+        F["Event F: GenerateSuggestions<br/>(Suggestions Service)<br/>Depends on E<br/>VC in: (1,3,2,0,0)<br/>VC out: (1,3,2,1,0)"]
+    end
+    
+    subgraph Queue ["QUEUE & CLEAR PHASE"]
+        Enq["Enqueue Order<br/>(Order Queue)<br/>VC in: (1,3,2,1,0)<br/>VC out: (1,3,2,1,1)"]
+        
+        Clear["Final Clear Broadcast<br/>VCf = (2,3,2,1,1)<br/>Clear sent to all services<br/>with final vector clock"]
+    end
+    
+    Result["✓ Order Processed<br/>All state cleaned up"]
+    
+    Init --> A
+    Init --> B
+    
+    A --> C
+    B --> D
+    
+    C --> E
+    D --> E
+    
+    E --> F
+    
+    F --> Enq
+    
+    Enq --> Clear
+    Clear --> Result
+```
 
     %% 3. CHAINED EVENTS C & D
     par Thread C (Depends on A)
