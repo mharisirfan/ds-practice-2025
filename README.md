@@ -174,7 +174,7 @@ graph TB
     Clear --> Result
 
 ```
-This sequence diagram illustrates how vector clocks track causality and asynchronous events across the microservices during a single checkout request. It highlights the Orchestrator branching out concurrent requests, how the Transaction Verification service sequentially merges and increments these incoming clocks to establish a strict mathematical order of operations, and how the final merged clock state is ultimately used to safely enqueue the order and clear the distributed caches.
+
 
 ## Leader Election Diagram
 ```mermaid
