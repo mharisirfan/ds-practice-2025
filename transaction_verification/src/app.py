@@ -4,85 +4,173 @@ import grpc
 from concurrent import futures
 import logging
 import re
+import threading
 
-# This set of lines are needed to import the gRPC stubs.
-# The path of the stubs is relative to the current file, or absolute inside the container.
-# Change these lines only if strictly needed.
-FILE = __file__ if '__file__' in globals() else os.getenv("PYTHONFILE", "")
-transaction_verification_grpc_path = os.path.abspath(os.path.join(FILE, '../../../utils/pb/transaction_verification'))
+FILE = __file__ if "__file__" in globals() else os.getenv("PYTHONFILE", "")
+transaction_verification_grpc_path = os.path.abspath(
+    os.path.join(FILE, "../../../utils/pb/transaction_verification")
+)
 sys.path.insert(0, transaction_verification_grpc_path)
-import transaction_verification_pb2
-import transaction_verification_pb2_grpc
+import transaction_verification_pb2 as pb
+import transaction_verification_pb2_grpc as pb_grpc
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+SERVICE_KEY = "transaction_verification"
 
 
-class TransactionVerificationServicer(
-    transaction_verification_pb2_grpc.TransactionVerificationServiceServicer
-):
-    """
-    gRPC BACKEND MICROSERVICE — TRANSACTION VERIFICATION
+def merge_clocks(*clocks):
+    """Merge vector clocks by taking the component-wise maximum."""
+    merged = {}
+    for clock in clocks:
+        for key, value in clock.items():
+            merged[key] = max(merged.get(key, 0), int(value))
+    return merged
 
-    This service runs as a gRPC server on port 50052.
 
-    It validates:
-    - User ID presence
-    - Non-empty cart
-    - Credit card format
+def clock_lte(local_clock, final_clock):
+    """Return True when local clock is less than or equal to VCf for all keys."""
+    keys = set(local_clock.keys()) | set(final_clock.keys())
+    for key in keys:
+        if local_clock.get(key, 0) > final_clock.get(key, 0):
+            return False
+    return True
 
-    It implements the TransactionVerificationService
-    defined in transaction_verification.proto.
 
-    This fulfills the second required backend microservice.
+class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServicer):
+    def __init__(self):
+        """Store per-order cached payload and per-order vector clock state."""
+        self.order_cache = {}
+        self.order_clocks = {}
+        self.lock = threading.Lock()
 
-    """
-    def VerifyTransaction(self, request, context):
-        logging.info(f"Received transaction verification request for user_id: {request.user_id}")
-        logging.info(f"Items count: {len(request.items)}, Credit card: {request.credit_card[:4]}****")
+    @staticmethod
+    def _clock_msg(clock_dict):
+        """Convert dictionary clock into protobuf vector clock message."""
+        msg = pb.VectorClock()
+        msg.clock.update(clock_dict)
+        return msg
 
-        # Verify cart is not empty
-        if not request.items:
-            logging.warning("Transaction verification failed: Cart is empty")
-            return transaction_verification_pb2.TransactionResponse(
-                is_valid=False,
-                message="Cart is empty"
+    def _merge_incoming(self, order_id, incoming_clock):
+        """Merge incoming clock with local order clock before processing an event."""
+        current = self.order_clocks.get(order_id, {})
+        merged = merge_clocks(current, incoming_clock)
+        self.order_clocks[order_id] = merged
+        return dict(merged)
+
+    def _tick(self, order_id, event_name):
+        """Advance local service component for the current order event and log it."""
+        clock = self.order_clocks.get(order_id, {})
+        clock[SERVICE_KEY] = clock.get(SERVICE_KEY, 0) + 1
+        self.order_clocks[order_id] = clock
+        logger.info("Event %s | order_id=%s | VC=%s", event_name, order_id, clock)
+        return dict(clock)
+
+    def InitOrder(self, request, context):
+        """Cache order input and initialize vector-clock tracking for this service."""
+        with self.lock:
+            self.order_cache[request.order_id] = {
+                "user_id": request.user_id,
+                "user_contact": request.user_contact,
+                "user_address": request.user_address,
+                "credit_card": request.credit_card,
+                "items": list(request.items),
+            }
+            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            clock = self._tick(request.order_id, "init")
+
+        return pb.InitOrderResponse(
+            success=True,
+            message="Transaction order initialized",
+            vector_clock=self._clock_msg(clock),
+        )
+
+    def VerifyItems(self, request, context):
+        """Event a: verify the order contains at least one item."""
+        with self.lock:
+            data = self.order_cache.get(request.order_id)
+            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            clock = self._tick(request.order_id, "a_verify_items")
+
+        if data is None:
+            return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(clock))
+
+        if not data["items"]:
+            return pb.EventResponse(ok=False, message="Cart is empty", vector_clock=self._clock_msg(clock))
+
+        return pb.EventResponse(ok=True, message="Items verified", vector_clock=self._clock_msg(clock))
+
+    def VerifyUserData(self, request, context):
+        """Event b: verify required user information fields are present."""
+        with self.lock:
+            data = self.order_cache.get(request.order_id)
+            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            clock = self._tick(request.order_id, "b_verify_user_data")
+
+        if data is None:
+            return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(clock))
+
+        user_id = data["user_id"].strip() if data["user_id"] else ""
+        user_contact = data["user_contact"].strip() if data["user_contact"] else ""
+        user_address = data["user_address"].strip() if data["user_address"] else ""
+        if not user_id or not user_contact or not user_address:
+            return pb.EventResponse(
+                ok=False,
+                message="Mandatory user data missing (name/contact/address)",
+                vector_clock=self._clock_msg(clock),
             )
 
-        # Verify user_id is provided
-        if not request.user_id or request.user_id.strip() == "":
-            logging.warning("Transaction verification failed: User ID is missing")
-            return transaction_verification_pb2.TransactionResponse(
-                is_valid=False,
-                message="User ID is required"
-            )
+        return pb.EventResponse(ok=True, message="User data verified", vector_clock=self._clock_msg(clock))
 
-        # Verify credit card format (16 digits)
-        if not re.match(r"^\d{16}$", request.credit_card):
-            logging.warning(f"Transaction verification failed: Invalid credit card format")
-            return transaction_verification_pb2.TransactionResponse(
-                is_valid=False,
-                message="Invalid credit card format"
-            )
+    def VerifyCardFormat(self, request, context):
+        """Event c: verify card format after upstream dependency is satisfied."""
+        with self.lock:
+            data = self.order_cache.get(request.order_id)
+            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            clock = self._tick(request.order_id, "c_verify_card_format")
 
-        logging.info(f"Transaction verified successfully for user_id: {request.user_id}")
-        return transaction_verification_pb2.TransactionResponse(
-            is_valid=True,
-            message="Transaction valid"
+        if data is None:
+            return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(clock))
+
+        if not re.match(r"^\d{16}$", data["credit_card"]):
+            return pb.EventResponse(ok=False, message="Invalid credit card format", vector_clock=self._clock_msg(clock))
+
+        return pb.EventResponse(ok=True, message="Credit card format verified", vector_clock=self._clock_msg(clock))
+
+    def ClearOrder(self, request, context):
+        """Clear cached order state only when local VC is causally <= VCf."""
+        with self.lock:
+            local = self.order_clocks.get(request.order_id, {})
+            final_clock = dict(request.final_vector_clock.clock)
+            if not clock_lte(local, final_clock):
+                logger.error("ClearOrder rejected | order_id=%s | local=%s | VCf=%s", request.order_id, local, final_clock)
+                return pb.ClearOrderResponse(
+                    success=False,
+                    message="Local VC is greater than VCf; refusing to clear",
+                    vector_clock=self._clock_msg(local),
+                )
+
+            self.order_cache.pop(request.order_id, None)
+            self.order_clocks.pop(request.order_id, None)
+
+        logger.info("ClearOrder success | order_id=%s | VCf=%s", request.order_id, final_clock)
+        return pb.ClearOrderResponse(
+            success=True,
+            message="Order state cleared",
+            vector_clock=self._clock_msg(final_clock),
         )
 
 
 def serve():
+    """Start gRPC server for transaction verification service."""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    transaction_verification_pb2_grpc.add_TransactionVerificationServiceServicer_to_server(
-        TransactionVerificationServicer(), server
-    )
+    pb_grpc.add_TransactionVerificationServiceServicer_to_server(TransactionVerificationServicer(), server)
     server.add_insecure_port("[::]:50052")
     server.start()
-    logging.info("Transaction Verification Service started on port 50052")
+    logger.info("Transaction Verification Service started on port 50052")
     server.wait_for_termination()
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
     serve()

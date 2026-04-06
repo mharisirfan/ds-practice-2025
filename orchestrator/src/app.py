@@ -1,299 +1,646 @@
 import sys
 import os
-import threading
 import json
 import logging
+import socket
+import time
+import uuid
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# This set of lines are needed to import the gRPC stubs.
-# The path of the stubs is relative to the current file, or absolute inside the container.
-# Change these lines only if strictly needed.
-FILE = __file__ if '__file__' in globals() else os.getenv("PYTHONFILE", "")
+FILE = __file__ if "__file__" in globals() else os.getenv("PYTHONFILE", "")
 
-# Setup fraud_detection gRPC path
-fraud_detection_grpc_path = os.path.abspath(os.path.join(FILE, '../../../utils/pb/fraud_detection'))
+fraud_detection_grpc_path = os.path.abspath(os.path.join(FILE, "../../../utils/pb/fraud_detection"))
 sys.path.insert(0, fraud_detection_grpc_path)
-import fraud_detection_pb2 as fraud_detection
-import fraud_detection_pb2_grpc as fraud_detection_grpc
+import fraud_detection_pb2 as fraud_pb
+import fraud_detection_pb2_grpc as fraud_grpc
 
-# Setup transaction_verification gRPC path
-transaction_verification_grpc_path = os.path.abspath(os.path.join(FILE, '../../../utils/pb/transaction_verification'))
+transaction_verification_grpc_path = os.path.abspath(
+    os.path.join(FILE, "../../../utils/pb/transaction_verification")
+)
 sys.path.insert(0, transaction_verification_grpc_path)
-import transaction_verification_pb2 as transaction_verification
-import transaction_verification_pb2_grpc as transaction_verification_grpc
+import transaction_verification_pb2 as tv_pb
+import transaction_verification_pb2_grpc as tv_grpc
 
-# Setup suggestions gRPC path
-suggestions_grpc_path = os.path.abspath(os.path.join(FILE, '../../../utils/pb/suggestions'))
+suggestions_grpc_path = os.path.abspath(os.path.join(FILE, "../../../utils/pb/suggestions"))
 sys.path.insert(0, suggestions_grpc_path)
-import suggestions_pb2 as suggestions
-import suggestions_pb2_grpc as suggestions_grpc
+import suggestions_pb2 as sug_pb
+import suggestions_pb2_grpc as sug_grpc
+
+order_queue_grpc_path = os.path.abspath(os.path.join(FILE, "../../../utils/pb/order_queue"))
+sys.path.insert(0, order_queue_grpc_path)
+import order_queue_pb2 as oq_pb
+import order_queue_pb2_grpc as oq_grpc
 
 import grpc
-import uuid
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-
-def check_fraud(card_number, order_amount):
-    """
-    gRPC CLIENT COMMUNICATION — FRAUD SERVICE
-
-    This function establishes a gRPC client connection
-    to the fraud_detection service.
-
-    It:
-    - Opens a gRPC channel
-    - Sends FraudRequest message
-    - Receives FraudResponse
-
-    This implements inter-service communication using gRPC.
-    """
-    try:
-        logger.info(f"Worker thread: Checking fraud for card ending in {card_number[-4:]}")
-        with grpc.insecure_channel('fraud_detection:50051') as channel:
-            stub = fraud_detection_grpc.FraudDetectionServiceStub(channel)
-            response = stub.CheckFraud(fraud_detection.FraudRequest(
-                card_number=card_number,
-                order_amount=order_amount
-            ))
-        is_fraud = response.is_fraud.lower() == "true"
-        logger.info(f"Fraud check result: {'FRAUDULENT' if is_fraud else 'NOT FRAUDULENT'}")
-        return is_fraud
-    except Exception as e:
-        logger.error(f"Error checking fraud: {str(e)}")
-        return False
-
-
-def verify_transaction(user_id, credit_card, items):
-    """
-    gRPC CLIENT COMMUNICATION — TRANSACTION VERIFICATION
-
-    This function connects to the transaction_verification
-    service via gRPC.
-
-    It sends a TransactionRequest and receives
-    a TransactionResponse.
-
-    This demonstrates backend-to-backend communication
-    using the gRPC protocol.
-    """
-    try:
-        logger.info(f"Worker thread: Verifying transaction for user_id: {user_id}")
-        with grpc.insecure_channel('transaction_verification:50052') as channel:
-            stub = transaction_verification_grpc.TransactionVerificationServiceStub(channel)
-            response = stub.VerifyTransaction(transaction_verification.TransactionRequest(
-                user_id=user_id,
-                credit_card=credit_card,
-                items=items
-            ))
-        logger.info(f"Transaction verification result: {'VALID' if response.is_valid else 'INVALID'} - {response.message}")
-        return response.is_valid
-    except Exception as e:
-        logger.error(f"Error verifying transaction: {str(e)}")
-        return False
-
-
-def get_suggestions(user_id, purchased_items):
-    """
-    gRPC CLIENT COMMUNICATION — SUGGESTIONS SERVICE
-
-    This function connects to the suggestions microservice
-    via gRPC.
-
-    It sends a SuggestionsRequest and receives
-    a SuggestionsResponse.
-
-    This completes the inter-service communication
-    requirement using gRPC.
-    """
-    try:
-        logger.info(f"Worker thread: Getting suggestions for user_id: {user_id}")
-        with grpc.insecure_channel('suggestions:50053') as channel:
-            stub = suggestions_grpc.SuggestionsServiceStub(channel)
-            response = stub.GetSuggestions(suggestions.SuggestionsRequest(
-                user_id=user_id,
-                purchased_items=purchased_items
-            ))
-        logger.info(f"Received {len(response.suggested_books)} book suggestions")
-        # Convert protobuf books to dict
-        suggested_books = [
-            {
-                'bookId': book.book_id,
-                'title': book.title,
-                'author': book.author
-            }
-            for book in response.suggested_books
-        ]
-        return suggested_books
-    except Exception as e:
-        logger.error(f"Error getting suggestions: {str(e)}")
-        return []
-
-
-# Import Flask
 from flask import Flask, request
 from flask_cors import CORS
 
-# Create a simple Flask app
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+ORCH_KEY = "orchestrator"
+CLEAR_RETRY_ATTEMPTS = 3
+CLEAR_RETRY_BACKOFF_SEC = 0.3
+
+CLEAR_SERVICES = {
+    "transaction_verification": {
+        "host": "transaction_verification",
+        "port": 50052,
+    },
+    "fraud_detection": {
+        "host": "fraud_detection",
+        "port": 50051,
+    },
+    "suggestions": {
+        "host": "suggestions",
+        "port": 50053,
+    },
+}
+
+
 app = Flask(__name__)
-# Enable CORS for the app
-CORS(app, resources={r'/*': {'origins': '*'}})
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 
-@app.route('/', methods=['GET'])
+def merge_clocks(*clocks):
+    """Merge multiple vector clocks by taking the maximum value per process key."""
+    merged = {}
+    for clock in clocks:
+        for key, value in clock.items():
+            merged[key] = max(merged.get(key, 0), int(value))
+    return merged
+
+
+def tick_orchestrator(clock):
+    """Advance the orchestrator component in a vector clock before dispatching a new event."""
+    updated = dict(clock)
+    updated[ORCH_KEY] = updated.get(ORCH_KEY, 0) + 1
+    return updated
+
+
+def to_tv_clock(clock):
+    """Convert a Python dict clock into transaction-verification protobuf format."""
+    msg = tv_pb.VectorClock()
+    msg.clock.update(clock)
+    return msg
+
+
+def to_fraud_clock(clock):
+    """Convert a Python dict clock into fraud-detection protobuf format."""
+    msg = fraud_pb.VectorClock()
+    msg.clock.update(clock)
+    return msg
+
+
+def to_sug_clock(clock):
+    """Convert a Python dict clock into suggestions protobuf format."""
+    msg = sug_pb.VectorClock()
+    msg.clock.update(clock)
+    return msg
+
+
+def to_oq_clock(clock):
+    """Convert a Python dict clock into order-queue protobuf format."""
+    msg = oq_pb.VectorClock()
+    msg.clock.update(clock)
+    return msg
+
+
+def rpc_init_transaction(order_id, user_id, contact, address, credit_card, items, clock):
+    """Initialize order cache and initial clock state in transaction-verification service."""
+    with grpc.insecure_channel("transaction_verification:50052") as channel:
+        stub = tv_grpc.TransactionVerificationServiceStub(channel)
+        response = stub.InitOrder(
+            tv_pb.InitOrderRequest(
+                order_id=order_id,
+                user_id=user_id,
+                user_contact=contact,
+                user_address=address,
+                credit_card=credit_card,
+                items=items,
+                vector_clock=to_tv_clock(clock),
+            )
+        )
+    return response.success, response.message, dict(response.vector_clock.clock)
+
+
+def rpc_init_fraud(order_id, user_id, contact, address, credit_card, order_amount, clock):
+    """Initialize order cache and initial clock state in fraud-detection service."""
+    with grpc.insecure_channel("fraud_detection:50051") as channel:
+        stub = fraud_grpc.FraudDetectionServiceStub(channel)
+        response = stub.InitOrder(
+            fraud_pb.InitOrderRequest(
+                order_id=order_id,
+                user_id=user_id,
+                user_contact=contact,
+                user_address=address,
+                card_number=credit_card,
+                order_amount=order_amount,
+                vector_clock=to_fraud_clock(clock),
+            )
+        )
+    return response.success, response.message, dict(response.vector_clock.clock)
+
+
+def rpc_init_suggestions(order_id, user_id, items, clock):
+    """Initialize order cache and initial clock state in suggestions service."""
+    with grpc.insecure_channel("suggestions:50053") as channel:
+        stub = sug_grpc.SuggestionsServiceStub(channel)
+        response = stub.InitOrder(
+            sug_pb.InitOrderRequest(
+                order_id=order_id,
+                user_id=user_id,
+                purchased_items=items,
+                vector_clock=to_sug_clock(clock),
+            )
+        )
+    return response.success, response.message, dict(response.vector_clock.clock)
+
+
+def rpc_a_verify_items(order_id, clock):
+    """Event a: validate that the order has at least one item."""
+    with grpc.insecure_channel("transaction_verification:50052") as channel:
+        stub = tv_grpc.TransactionVerificationServiceStub(channel)
+        response = stub.VerifyItems(tv_pb.EventRequest(order_id=order_id, vector_clock=to_tv_clock(clock)))
+    return response.ok, response.message, dict(response.vector_clock.clock)
+
+
+def rpc_b_verify_user_data(order_id, clock):
+    """Event b: validate mandatory user fields (name, contact, address)."""
+    with grpc.insecure_channel("transaction_verification:50052") as channel:
+        stub = tv_grpc.TransactionVerificationServiceStub(channel)
+        response = stub.VerifyUserData(tv_pb.EventRequest(order_id=order_id, vector_clock=to_tv_clock(clock)))
+    return response.ok, response.message, dict(response.vector_clock.clock)
+
+
+def rpc_c_verify_card_format(order_id, clock):
+    """Event c: validate the card format after event a."""
+    with grpc.insecure_channel("transaction_verification:50052") as channel:
+        stub = tv_grpc.TransactionVerificationServiceStub(channel)
+        response = stub.VerifyCardFormat(tv_pb.EventRequest(order_id=order_id, vector_clock=to_tv_clock(clock)))
+    return response.ok, response.message, dict(response.vector_clock.clock)
+
+
+def rpc_d_check_user_fraud(order_id, clock):
+    """Event d: run fraud checks on user-related fields after event b."""
+    with grpc.insecure_channel("fraud_detection:50051") as channel:
+        stub = fraud_grpc.FraudDetectionServiceStub(channel)
+        response = stub.CheckUserFraud(fraud_pb.EventRequest(order_id=order_id, vector_clock=to_fraud_clock(clock)))
+    return response.ok, response.message, dict(response.vector_clock.clock)
+
+
+def rpc_e_check_card_fraud(order_id, clock):
+    """Event e: run card fraud checks after both c and d complete."""
+    with grpc.insecure_channel("fraud_detection:50051") as channel:
+        stub = fraud_grpc.FraudDetectionServiceStub(channel)
+        response = stub.CheckCardFraud(fraud_pb.EventRequest(order_id=order_id, vector_clock=to_fraud_clock(clock)))
+    return response.ok, response.message, dict(response.vector_clock.clock)
+
+
+def rpc_f_generate_suggestions(order_id, clock):
+    """Event f: generate recommendations after fraud checks are complete."""
+    with grpc.insecure_channel("suggestions:50053") as channel:
+        stub = sug_grpc.SuggestionsServiceStub(channel)
+        response = stub.GenerateSuggestions(sug_pb.EventRequest(order_id=order_id, vector_clock=to_sug_clock(clock)))
+    books = [{"bookId": b.book_id, "title": b.title, "author": b.author} for b in response.suggested_books]
+    return response.ok, response.message, books, dict(response.vector_clock.clock)
+
+
+def rpc_enqueue_order(order_id, user_id, items, clock):
+    """Enqueue an approved order for executor-side critical-section processing."""
+    with grpc.insecure_channel("order_queue:50060") as channel:
+        stub = oq_grpc.OrderQueueServiceStub(channel)
+        request = oq_pb.EnqueueRequest(
+            order=oq_pb.QueuedOrder(
+                order_id=order_id,
+                user_id=user_id,
+                items=items,
+                vector_clock=to_oq_clock(clock),
+            )
+        )
+        response = stub.Enqueue(request)
+    return response.success, response.message
+
+
+def rpc_clear_transaction(order_id, final_clock):
+    """Request transaction-verification service to clear order state using VCf."""
+    with grpc.insecure_channel("transaction_verification:50052") as channel:
+        stub = tv_grpc.TransactionVerificationServiceStub(channel)
+        response = stub.ClearOrder(
+            tv_pb.ClearOrderRequest(order_id=order_id, final_vector_clock=to_tv_clock(final_clock))
+        )
+    return response.success, response.message
+
+
+def rpc_clear_fraud(order_id, final_clock):
+    """Request fraud-detection service to clear order state using VCf."""
+    with grpc.insecure_channel("fraud_detection:50051") as channel:
+        stub = fraud_grpc.FraudDetectionServiceStub(channel)
+        response = stub.ClearOrder(
+            fraud_pb.ClearOrderRequest(order_id=order_id, final_vector_clock=to_fraud_clock(final_clock))
+        )
+    return response.success, response.message
+
+
+def rpc_clear_suggestions(order_id, final_clock):
+    """Request suggestions service to clear order state using VCf."""
+    with grpc.insecure_channel("suggestions:50053") as channel:
+        stub = sug_grpc.SuggestionsServiceStub(channel)
+        response = stub.ClearOrder(
+            sug_pb.ClearOrderRequest(order_id=order_id, final_vector_clock=to_sug_clock(final_clock))
+        )
+    return response.success, response.message
+
+
+def discover_service_replicas(host, port):
+    """Discover all reachable replica endpoints behind a Docker service DNS name."""
+    targets = set()
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        for info in infos:
+            ip = info[4][0]
+            targets.add(f"{ip}:{port}")
+    except socket.gaierror as exc:
+        logger.error("Replica discovery failed | service=%s:%s | error=%s", host, port, exc)
+
+    # Fallback to service DNS name so at least one endpoint is always attempted.
+    targets.add(f"{host}:{port}")
+    return sorted(targets)
+
+
+def rpc_clear_target(service_name, target, order_id, final_clock):
+    """Send a clear-order request to one concrete replica endpoint."""
+    if service_name == "transaction_verification":
+        with grpc.insecure_channel(target) as channel:
+            stub = tv_grpc.TransactionVerificationServiceStub(channel)
+            response = stub.ClearOrder(
+                tv_pb.ClearOrderRequest(order_id=order_id, final_vector_clock=to_tv_clock(final_clock))
+            )
+            return response.success, response.message
+
+    if service_name == "fraud_detection":
+        with grpc.insecure_channel(target) as channel:
+            stub = fraud_grpc.FraudDetectionServiceStub(channel)
+            response = stub.ClearOrder(
+                fraud_pb.ClearOrderRequest(order_id=order_id, final_vector_clock=to_fraud_clock(final_clock))
+            )
+            return response.success, response.message
+
+    if service_name == "suggestions":
+        with grpc.insecure_channel(target) as channel:
+            stub = sug_grpc.SuggestionsServiceStub(channel)
+            response = stub.ClearOrder(
+                sug_pb.ClearOrderRequest(order_id=order_id, final_vector_clock=to_sug_clock(final_clock))
+            )
+            return response.success, response.message
+
+    return False, f"Unknown clear service: {service_name}"
+
+
+def clear_target_with_retries(service_name, target, order_id, final_clock):
+    """Retry clear broadcast to a replica to tolerate transient RPC failures."""
+    for attempt in range(1, CLEAR_RETRY_ATTEMPTS + 1):
+        try:
+            success, message = rpc_clear_target(service_name, target, order_id, final_clock)
+            if success:
+                return {
+                    "service": service_name,
+                    "target": target,
+                    "success": True,
+                    "attempt": attempt,
+                    "message": message,
+                }
+
+            if attempt < CLEAR_RETRY_ATTEMPTS:
+                time.sleep(CLEAR_RETRY_BACKOFF_SEC * attempt)
+            else:
+                return {
+                    "service": service_name,
+                    "target": target,
+                    "success": False,
+                    "attempt": attempt,
+                    "message": message,
+                }
+        except grpc.RpcError as exc:
+            if attempt < CLEAR_RETRY_ATTEMPTS:
+                time.sleep(CLEAR_RETRY_BACKOFF_SEC * attempt)
+                continue
+            return {
+                "service": service_name,
+                "target": target,
+                "success": False,
+                "attempt": attempt,
+                "message": f"RPC error: {exc}",
+            }
+
+    return {
+        "service": service_name,
+        "target": target,
+        "success": False,
+        "attempt": CLEAR_RETRY_ATTEMPTS,
+        "message": "Unknown clear error",
+    }
+
+
+def broadcast_final_clear(order_id, final_clock):
+    """Final flow step: broadcast clear with VCf to every discovered backend replica."""
+    targets = []
+    for service_name, cfg in CLEAR_SERVICES.items():
+        replicas = discover_service_replicas(cfg["host"], cfg["port"])
+        for target in replicas:
+            targets.append((service_name, target))
+
+    results = []
+    with ThreadPoolExecutor(max_workers=max(3, len(targets))) as pool:
+        future_map = {
+            pool.submit(clear_target_with_retries, service_name, target, order_id, final_clock): (service_name, target)
+            for service_name, target in targets
+        }
+        for future in as_completed(future_map):
+            result = future.result(timeout=12)
+            results.append(result)
+
+    failed = [r for r in results if not r["success"]]
+    return {
+        "all_ok": len(failed) == 0,
+        "targets": len(results),
+        "failed": len(failed),
+        "results": results,
+    }
+
+
+def make_result(name, ok, message, clock, suggested_books=None):
+    """Normalize event execution results into a common structure."""
+    return {
+        "name": name,
+        "ok": ok,
+        "message": message,
+        "clock": dict(clock),
+        "suggested_books": suggested_books or [],
+    }
+
+
+def run_chain_event(stop_event, dep_future, name, func):
+    """Run a dependent event once its predecessor succeeds, propagating cancellation."""
+    if stop_event.is_set():
+        return make_result(name, False, "Cancelled due to previous failure", {})
+
+    dep = dep_future.result(timeout=10)
+    if not dep["ok"]:
+        return make_result(name, False, f"Skipped because dependency {dep['name']} failed", dep["clock"])
+
+    if stop_event.is_set():
+        return make_result(name, False, "Cancelled due to previous failure", dep["clock"])
+
+    clock = tick_orchestrator(dep["clock"])
+    ok, message, out_clock = func(clock)
+    if not ok:
+        stop_event.set()
+    return make_result(name, ok, message, out_clock)
+
+
+def run_chain_event_with_payload(stop_event, dep_future, name, func):
+    """Run a dependent event that returns both status and payload (suggestions)."""
+    if stop_event.is_set():
+        return make_result(name, False, "Cancelled due to previous failure", {})
+
+    dep = dep_future.result(timeout=10)
+    if not dep["ok"]:
+        return make_result(name, False, f"Skipped because dependency {dep['name']} failed", dep["clock"])
+
+    if stop_event.is_set():
+        return make_result(name, False, "Cancelled due to previous failure", dep["clock"])
+
+    clock = tick_orchestrator(dep["clock"])
+    ok, message, payload, out_clock = func(clock)
+    if not ok:
+        stop_event.set()
+    return make_result(name, ok, message, out_clock, suggested_books=payload)
+
+
+def run_join_event(stop_event, dep1_future, dep2_future, name, func):
+    """Run a join event that requires two predecessors and merges their vector clocks."""
+    if stop_event.is_set():
+        return make_result(name, False, "Cancelled due to previous failure", {})
+
+    dep1 = dep1_future.result(timeout=10)
+    dep2 = dep2_future.result(timeout=10)
+
+    if not dep1["ok"] or not dep2["ok"]:
+        merged = merge_clocks(dep1["clock"], dep2["clock"])
+        return make_result(name, False, "Skipped because dependency failed", merged)
+
+    if stop_event.is_set():
+        return make_result(name, False, "Cancelled due to previous failure", merge_clocks(dep1["clock"], dep2["clock"]))
+
+    merged = merge_clocks(dep1["clock"], dep2["clock"])
+    clock = tick_orchestrator(merged)
+    ok, message, out_clock = func(clock)
+    if not ok:
+        stop_event.set()
+    return make_result(name, ok, message, out_clock)
+
+
+@app.route("/", methods=["GET"])
 def index():
-    """
-    Responds with 'Hello' when a GET request is made to '/' endpoint.
-    """
-    logger.info("GET request received on '/' endpoint")
+    """Health route for basic orchestrator availability checks."""
     return "Hello from Orchestrator!"
 
 
-@app.route('/checkout', methods=['POST'])
+@app.route("/checkout", methods=["POST"])
 def checkout():
-    """
-    REST IMPLEMENTATION (Frontend ↔ Orchestrator)
-
-    This endpoint implements the RESTful API defined in bookstore.yaml.
-    It handles POST requests from the frontend at '/checkout'.
-
-    Responsibilities:
-    - Parse incoming JSON request (CheckoutRequest schema)
-    - Extract order data (user, items, credit card)
-    - Trigger backend processing via gRPC microservices
-    - Return response following OrderStatusResponse schema
-
-    This establishes the REST communication channel between
-    the frontend and backend system.
-
-    """
+    """Execute ordered checkout workflow with vector clocks, queueing, and final clear broadcast."""
     try:
-        logger.info("Received POST request on '/checkout' endpoint")
-        
-        # Parse request data
-        request_data = json.loads(request.data)
-        logger.info(f"Request data received with {len(request_data.get('items', []))} items")
-        
-        # Extract necessary data
-        items = request_data.get('items', [])
-        credit_card_data = request_data.get('creditCard', {})
-        credit_card_number = credit_card_data.get('number', '')
-        user_data = request_data.get('user', {})
-        user_id = user_data.get('name', 'unknown_user')
-        
-        logger.info(f"Extracted data - User: {user_id}, Items: {len(items)}, Card ending in: {credit_card_number[-4:] if credit_card_number else 'N/A'}")
-        
-        # Convert items to list of item IDs for transaction verification
-        item_list = [item.get('bookId', item.get('name', '')) for item in items]
-        
-        # Execute fraud detection, transaction verification, and suggestions in parallel
-        logger.info("Spawning worker threads for parallel processing")
-        results = {
-            'is_fraud': False,
-            'is_transaction_valid': False,
-            'suggested_books': [],
-            'fraud_error': None,
-            'transaction_error': None,
-            'suggestions_error': None
-        }
-        
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            """
-            MULTITHREADING IMPLEMENTATION (Master-Worker Model)
+        body = json.loads(request.data)
 
-            The orchestrator acts as the master thread.
-            It spawns three worker threads using ThreadPoolExecutor.
+        user = body.get("user", {})
+        user_id = user.get("name", "").strip()
+        user_contact = user.get("contact", "").strip()
+        user_address = user.get("address", "").strip()
 
-            Each worker thread:
-            - Calls one backend microservice (fraud, verification, suggestions)
-            - Executes in parallel
+        card_data = body.get("creditCard", {})
+        credit_card = card_data.get("number", "")
 
-            The orchestrator waits for all threads to complete
-            before consolidating the results.
+        items = body.get("items", [])
+        item_list = [item.get("bookId", item.get("name", "")) for item in items]
+        order_amount = str(len(items))
 
-            This fulfills the threading requirement of the lab.
-            """
-            # Submit tasks for parallel execution
-            fraud_task = executor.submit(check_fraud, credit_card_number, str(len(items)))
-            transaction_task = executor.submit(verify_transaction, user_id, credit_card_number, item_list)
-            suggestions_task = executor.submit(get_suggestions, user_id, item_list)
-            
-            # Wait for tasks to complete and collect results
-            logger.info("Waiting for worker threads to complete...")
-            
-            try:
-                results['is_fraud'] = fraud_task.result(timeout=10)
-            except Exception as e:
-                logger.error(f"Fraud detection task failed: {str(e)}")
-                results['fraud_error'] = str(e)
-                results['is_fraud'] = False
-            
-            try:
-                results['is_transaction_valid'] = transaction_task.result(timeout=10)
-            except Exception as e:
-                logger.error(f"Transaction verification task failed: {str(e)}")
-                results['transaction_error'] = str(e)
-                results['is_transaction_valid'] = False
-            
-            try:
-                results['suggested_books'] = suggestions_task.result(timeout=10)
-            except Exception as e:
-                logger.error(f"Suggestions task failed: {str(e)}")
-                results['suggestions_error'] = str(e)
-                results['suggested_books'] = []
-        
-        # Consolidate results
-        logger.info(f"All tasks completed. Results - Fraud: {results['is_fraud']}, Transaction Valid: {results['is_transaction_valid']}, Suggestions: {len(results['suggested_books'])}")
-        
-        # Determine order status
-        """
-        RESULT CONSOLIDATION LOGIC
+        order_id = str(uuid.uuid4())
+        base_clock = tick_orchestrator({})
+        latest_clock = dict(base_clock)
+        status = "Order Rejected"
+        books = []
+        http_status = 200
 
-        After all worker threads return results,
-        the orchestrator combines them.
+        logger.info("Order started | order_id=%s | base VC=%s", order_id, base_clock)
 
-        Rule:
-        - If fraud is detected OR transaction is invalid → Order Rejected
-        - Otherwise → Order Approved with suggestions
+        try:
+            with ThreadPoolExecutor(max_workers=3) as init_pool:
+                init_a = init_pool.submit(
+                    rpc_init_transaction,
+                    order_id,
+                    user_id,
+                    user_contact,
+                    user_address,
+                    credit_card,
+                    item_list,
+                    tick_orchestrator(base_clock),
+                )
+                init_b = init_pool.submit(
+                    rpc_init_fraud,
+                    order_id,
+                    user_id,
+                    user_contact,
+                    user_address,
+                    credit_card,
+                    order_amount,
+                    tick_orchestrator(base_clock),
+                )
+                init_c = init_pool.submit(
+                    rpc_init_suggestions,
+                    order_id,
+                    user_id,
+                    item_list,
+                    tick_orchestrator(base_clock),
+                )
 
-        This implements the final decision-making step
-        in the orchestrated workflow.
-        """
-        if results['is_fraud'] or not results['is_transaction_valid']:
-            order_status = "Order Rejected"
-            suggested_books = []
-            reason = "Fraud detected" if results['is_fraud'] else "Transaction verification failed"
-            logger.warning(f"Order rejected - {reason}")
-        else:
-            order_status = "Order Approved"
-            suggested_books = results['suggested_books']
-            logger.info(f"Order approved - Returning {len(suggested_books)} book suggestions")
-        
-        # Create response following API specification
-        order_id = str(uuid.uuid4())[:8]
-        order_status_response = {
-            'orderId': order_id,
-            'status': order_status,
-            'suggestedBooks': suggested_books
-        }
-        
-        logger.info(f"Returning response - Order ID: {order_id}, Status: {order_status}")
-        return order_status_response
-    
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing error: {str(e)}")
-        return {'error': 'Invalid request format'}, 400
-    except Exception as e:
-        logger.error(f"Unexpected error in checkout: {str(e)}")
-        return {'error': 'Internal server error'}, 500
+                ok_a, msg_a, clock_a = init_a.result(timeout=10)
+                ok_b, msg_b, clock_b = init_b.result(timeout=10)
+                ok_c, msg_c, clock_c = init_c.result(timeout=10)
+
+            init_clock = merge_clocks(base_clock, clock_a, clock_b, clock_c)
+            latest_clock = dict(init_clock)
+
+            if not (ok_a and ok_b and ok_c):
+                logger.error("Init failed | order_id=%s | msg=%s | VC=%s", order_id, [msg_a, msg_b, msg_c], init_clock)
+            else:
+                stop_event = threading.Event()
+                failure = None
+
+                with ThreadPoolExecutor(max_workers=6) as pool:
+                    future_a = pool.submit(
+                        lambda: make_result(
+                            "a",
+                            *rpc_a_verify_items(order_id, tick_orchestrator(init_clock)),
+                        )
+                    )
+                    future_b = pool.submit(
+                        lambda: make_result(
+                            "b",
+                            *rpc_b_verify_user_data(order_id, tick_orchestrator(init_clock)),
+                        )
+                    )
+                    future_c = pool.submit(
+                        run_chain_event,
+                        stop_event,
+                        future_a,
+                        "c",
+                        lambda c_clock: rpc_c_verify_card_format(order_id, c_clock),
+                    )
+                    future_d = pool.submit(
+                        run_chain_event,
+                        stop_event,
+                        future_b,
+                        "d",
+                        lambda d_clock: rpc_d_check_user_fraud(order_id, d_clock),
+                    )
+                    future_e = pool.submit(
+                        run_join_event,
+                        stop_event,
+                        future_c,
+                        future_d,
+                        "e",
+                        lambda e_clock: rpc_e_check_card_fraud(order_id, e_clock),
+                    )
+                    future_f = pool.submit(
+                        run_chain_event_with_payload,
+                        stop_event,
+                        future_e,
+                        "f",
+                        lambda f_clock: rpc_f_generate_suggestions(order_id, f_clock),
+                    )
+
+                    futures = [future_a, future_b, future_c, future_d, future_e, future_f]
+                    for done in as_completed(futures):
+                        result = done.result(timeout=10)
+                        logger.info(
+                            "Event %s complete | ok=%s | msg=%s | VC=%s",
+                            result["name"],
+                            result["ok"],
+                            result["message"],
+                            result["clock"],
+                        )
+                        if result["clock"]:
+                            latest_clock = merge_clocks(latest_clock, result["clock"])
+                        if not result["ok"] and failure is None:
+                            failure = result
+                            stop_event.set()
+                            for future in futures:
+                                future.cancel()
+
+                    if failure is None:
+                        final_result = future_f.result(timeout=10)
+                    else:
+                        final_result = make_result("f", False, "Not completed", failure["clock"])
+
+                if failure is not None:
+                    status = "Order Rejected"
+                    books = []
+                    latest_clock = merge_clocks(latest_clock, final_result["clock"])
+                else:
+                    status = "Order Approved"
+                    books = final_result["suggested_books"]
+                    latest_clock = merge_clocks(latest_clock, final_result["clock"])
+
+                if status == "Order Approved":
+                    enq_ok, enq_msg = rpc_enqueue_order(order_id, user_id, item_list, latest_clock)
+                    if not enq_ok:
+                        logger.error("Enqueue failed | order_id=%s | message=%s", order_id, enq_msg)
+                        status = "Order Rejected"
+                        books = []
+                    else:
+                        logger.info("Order enqueued | order_id=%s", order_id)
+
+        except Exception as flow_exc:
+            logger.exception("Checkout flow error | order_id=%s | error=%s", order_id, flow_exc)
+            status = "Order Rejected"
+            books = []
+            http_status = 500
+
+        final_clock = tick_orchestrator(latest_clock)
+        logger.info("Flow finished | order_id=%s | status=%s | VCf=%s", order_id, status, final_clock)
+
+        clear_summary = broadcast_final_clear(order_id, final_clock)
+        if not clear_summary["all_ok"]:
+            for failed in clear_summary["results"]:
+                if not failed["success"]:
+                    logger.error(
+                        "Clear broadcast error | order_id=%s | service=%s | target=%s | attempt=%s | message=%s",
+                        order_id,
+                        failed["service"],
+                        failed["target"],
+                        failed["attempt"],
+                        failed["message"],
+                    )
+
+        return {
+            "orderId": order_id,
+            "status": status,
+            "suggestedBooks": books,
+            "clearBroadcast": {
+                "targets": clear_summary["targets"],
+                "failed": clear_summary["failed"],
+                "allOk": clear_summary["all_ok"],
+            },
+        }, http_status
+
+    except json.JSONDecodeError:
+        return {"error": "Invalid request format"}, 400
+    except Exception as exc:
+        logger.error("Checkout failed: %s", exc)
+        return {"error": "Internal server error"}, 500
 
 
-if __name__ == '__main__':
-    logger.info("Starting Orchestrator Service")
-    # Run the app in debug mode to enable hot reloading.
-    app.run(host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)

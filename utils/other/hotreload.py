@@ -1,6 +1,7 @@
 import sys
 import time
 import subprocess
+import os
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -15,6 +16,24 @@ python hotreload.py <script>
 """
 
 DIR_TO_WATCH = '/app'
+
+
+def is_truthy(value):
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def build_command(script):
+    """Build child process command; optionally run under debugpy."""
+    if not is_truthy(os.getenv("DEBUGPY_ENABLED", "false")):
+        return [sys.executable, script]
+
+    host = os.getenv("DEBUGPY_HOST", "0.0.0.0")
+    port = os.getenv("DEBUGPY_PORT", "5678")
+    cmd = [sys.executable, "-m", "debugpy", "--listen", f"{host}:{port}"]
+    if is_truthy(os.getenv("DEBUGPY_WAIT_FOR_CLIENT", "false")):
+        cmd.append("--wait-for-client")
+    cmd.append(script)
+    return cmd
 
 class OnAnyModifiedFileHandler(FileSystemEventHandler):
     def __init__(self, script, process):
@@ -50,11 +69,11 @@ class OnAnyModifiedFileHandler(FileSystemEventHandler):
             self.process.terminate()
             self.process.wait()
 
-        self.process = subprocess.Popen([sys.executable, self.script])
+        self.process = subprocess.Popen(build_command(self.script))
 
 
 def main(script):
-    process = subprocess.Popen([sys.executable, script])  # Start the script
+    process = subprocess.Popen(build_command(script))  # Start the script
     event_handler = OnAnyModifiedFileHandler(script, process)
     observer = Observer()
     observer.schedule(event_handler, DIR_TO_WATCH, recursive=True)

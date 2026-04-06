@@ -3,12 +3,10 @@
 import grpc
 import warnings
 
-import suggestions_pb2 as suggestions__pb2
+import order_queue_pb2 as order__queue__pb2
 
-GRPC_GENERATED_VERSION = '1.64.1'
+GRPC_GENERATED_VERSION = '1.78.0'
 GRPC_VERSION = grpc.__version__
-EXPECTED_ERROR_RELEASE = '1.65.0'
-SCHEDULED_RELEASE_DATE = 'June 25, 2024'
 _version_not_supported = False
 
 try:
@@ -18,19 +16,16 @@ except ImportError:
     _version_not_supported = True
 
 if _version_not_supported:
-    warnings.warn(
+    raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in suggestions_pb2_grpc.py depends on'
+        + ' but the generated code in order_queue_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
-        + f' This warning will become an error in {EXPECTED_ERROR_RELEASE},'
-        + f' scheduled for release on {SCHEDULED_RELEASE_DATE}.',
-        RuntimeWarning
     )
 
 
-class SuggestionsServiceStub(object):
+class OrderQueueServiceStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -39,75 +34,75 @@ class SuggestionsServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.InitOrder = channel.unary_unary(
-                '/suggestions.SuggestionsService/InitOrder',
-                request_serializer=suggestions__pb2.InitOrderRequest.SerializeToString,
-                response_deserializer=suggestions__pb2.InitOrderResponse.FromString,
+        self.Enqueue = channel.unary_unary(
+                '/order_queue.OrderQueueService/Enqueue',
+                request_serializer=order__queue__pb2.EnqueueRequest.SerializeToString,
+                response_deserializer=order__queue__pb2.EnqueueResponse.FromString,
                 _registered_method=True)
-        self.GenerateSuggestions = channel.unary_unary(
-                '/suggestions.SuggestionsService/GenerateSuggestions',
-                request_serializer=suggestions__pb2.EventRequest.SerializeToString,
-                response_deserializer=suggestions__pb2.SuggestionsResponse.FromString,
+        self.TryAcquireLeadership = channel.unary_unary(
+                '/order_queue.OrderQueueService/TryAcquireLeadership',
+                request_serializer=order__queue__pb2.LeadershipRequest.SerializeToString,
+                response_deserializer=order__queue__pb2.LeadershipResponse.FromString,
                 _registered_method=True)
-        self.ClearOrder = channel.unary_unary(
-                '/suggestions.SuggestionsService/ClearOrder',
-                request_serializer=suggestions__pb2.ClearOrderRequest.SerializeToString,
-                response_deserializer=suggestions__pb2.ClearOrderResponse.FromString,
+        self.Dequeue = channel.unary_unary(
+                '/order_queue.OrderQueueService/Dequeue',
+                request_serializer=order__queue__pb2.DequeueRequest.SerializeToString,
+                response_deserializer=order__queue__pb2.DequeueResponse.FromString,
                 _registered_method=True)
 
 
-class SuggestionsServiceServicer(object):
+class OrderQueueServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
-    def InitOrder(self, request, context):
+    def Enqueue(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def GenerateSuggestions(self, request, context):
+    def TryAcquireLeadership(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def ClearOrder(self, request, context):
+    def Dequeue(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
 
-def add_SuggestionsServiceServicer_to_server(servicer, server):
+def add_OrderQueueServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'InitOrder': grpc.unary_unary_rpc_method_handler(
-                    servicer.InitOrder,
-                    request_deserializer=suggestions__pb2.InitOrderRequest.FromString,
-                    response_serializer=suggestions__pb2.InitOrderResponse.SerializeToString,
+            'Enqueue': grpc.unary_unary_rpc_method_handler(
+                    servicer.Enqueue,
+                    request_deserializer=order__queue__pb2.EnqueueRequest.FromString,
+                    response_serializer=order__queue__pb2.EnqueueResponse.SerializeToString,
             ),
-            'GenerateSuggestions': grpc.unary_unary_rpc_method_handler(
-                    servicer.GenerateSuggestions,
-                    request_deserializer=suggestions__pb2.EventRequest.FromString,
-                    response_serializer=suggestions__pb2.SuggestionsResponse.SerializeToString,
+            'TryAcquireLeadership': grpc.unary_unary_rpc_method_handler(
+                    servicer.TryAcquireLeadership,
+                    request_deserializer=order__queue__pb2.LeadershipRequest.FromString,
+                    response_serializer=order__queue__pb2.LeadershipResponse.SerializeToString,
             ),
-            'ClearOrder': grpc.unary_unary_rpc_method_handler(
-                    servicer.ClearOrder,
-                    request_deserializer=suggestions__pb2.ClearOrderRequest.FromString,
-                    response_serializer=suggestions__pb2.ClearOrderResponse.SerializeToString,
+            'Dequeue': grpc.unary_unary_rpc_method_handler(
+                    servicer.Dequeue,
+                    request_deserializer=order__queue__pb2.DequeueRequest.FromString,
+                    response_serializer=order__queue__pb2.DequeueResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'suggestions.SuggestionsService', rpc_method_handlers)
+            'order_queue.OrderQueueService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('suggestions.SuggestionsService', rpc_method_handlers)
+    server.add_registered_method_handlers('order_queue.OrderQueueService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
-class SuggestionsService(object):
+class OrderQueueService(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
-    def InitOrder(request,
+    def Enqueue(request,
             target,
             options=(),
             channel_credentials=None,
@@ -120,9 +115,9 @@ class SuggestionsService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/suggestions.SuggestionsService/InitOrder',
-            suggestions__pb2.InitOrderRequest.SerializeToString,
-            suggestions__pb2.InitOrderResponse.FromString,
+            '/order_queue.OrderQueueService/Enqueue',
+            order__queue__pb2.EnqueueRequest.SerializeToString,
+            order__queue__pb2.EnqueueResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -134,7 +129,7 @@ class SuggestionsService(object):
             _registered_method=True)
 
     @staticmethod
-    def GenerateSuggestions(request,
+    def TryAcquireLeadership(request,
             target,
             options=(),
             channel_credentials=None,
@@ -147,9 +142,9 @@ class SuggestionsService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/suggestions.SuggestionsService/GenerateSuggestions',
-            suggestions__pb2.EventRequest.SerializeToString,
-            suggestions__pb2.SuggestionsResponse.FromString,
+            '/order_queue.OrderQueueService/TryAcquireLeadership',
+            order__queue__pb2.LeadershipRequest.SerializeToString,
+            order__queue__pb2.LeadershipResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -161,7 +156,7 @@ class SuggestionsService(object):
             _registered_method=True)
 
     @staticmethod
-    def ClearOrder(request,
+    def Dequeue(request,
             target,
             options=(),
             channel_credentials=None,
@@ -174,9 +169,9 @@ class SuggestionsService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/suggestions.SuggestionsService/ClearOrder',
-            suggestions__pb2.ClearOrderRequest.SerializeToString,
-            suggestions__pb2.ClearOrderResponse.FromString,
+            '/order_queue.OrderQueueService/Dequeue',
+            order__queue__pb2.DequeueRequest.SerializeToString,
+            order__queue__pb2.DequeueResponse.FromString,
             options,
             channel_credentials,
             insecure,

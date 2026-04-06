@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package order_queue;
+
+service OrderQueueService {
+  rpc Enqueue (EnqueueRequest) returns (EnqueueResponse);
+  rpc TryAcquireLeadership (LeadershipRequest) returns (LeadershipResponse);
+  rpc Dequeue (DequeueRequest) returns (DequeueResponse);
+}
+
+message VectorClock {
+  map<string, int32> clock = 1;
+}
+
+message QueuedOrder {
+  string order_id = 1;
+  string user_id = 2;
+  repeated string items = 3;
+  VectorClock vector_clock = 4;
+}
+
+message EnqueueRequest {
+  QueuedOrder order = 1;
+}
+
+message EnqueueResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message LeadershipRequest {
+  string executor_id = 1;
+  int32 lease_seconds = 2;
+}
+
+message LeadershipResponse {
+  bool granted = 1;
+  string leader_id = 2;
+  int64 lease_expiry_unix_ms = 3;
+  string message = 4;
+}
+
+message DequeueRequest {
+  string executor_id = 1;
+  VectorClock vector_clock = 2;
+}
+
+message DequeueResponse {
+  bool success = 1;
+  bool has_order = 2;
+  string message = 3;
+  QueuedOrder order = 4;
+}

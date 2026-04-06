@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package order_executor;
+
+service OrderExecutorService {
+  rpc Ping (PingRequest) returns (PingResponse);
+}
+
+message PingRequest {}
+
+message PingResponse {
+  string executor_id = 1;
+  string leader_id = 2;
+  bool is_leader = 3;
+  string status = 4;
+}
