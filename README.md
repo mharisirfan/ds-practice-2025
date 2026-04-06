@@ -54,6 +54,43 @@ backend services:
 - Python 3.8 or newer
 - pip
 - [grpcio-tools](https://grpc.io/docs/languages/python/quickstart/)
+
+
+
+# Leader Election Diagram
+
+```mermaid
+sequenceDiagram
+    participant E1 as Executor-1
+    participant E2 as Executor-2
+    participant Q as Order Queue (central authority)
+
+    loop every POLL_SECONDS
+        E1->>Q: TryAcquireLeadership(executor-1, lease_seconds)
+        Q-->>E1: granted=true, leader_id=executor-1, lease_expiry
+    end
+
+    loop every POLL_SECONDS
+        E2->>Q: TryAcquireLeadership(executor-2, lease_seconds)
+        Q-->>E2: granted=false, leader_id=executor-1
+    end
+
+    E1->>Q: Dequeue(executor-1)
+    Q-->>E1: success=true, has_order=true/false
+
+    E2->>Q: Dequeue(executor-2)
+    Q-->>E2: success=false (not active leader)
+
+    Note over E1,Q: If E1 renews before expiry, leadership continues.
+    Note over E1,E2: If E1 fails/stops renewing, lease expires.
+
+    E2->>Q: TryAcquireLeadership(executor-2, lease_seconds)
+    Q-->>E2: granted=true, leader_id=executor-2
+
+    E2->>Q: Dequeue(executor-2)
+    Q-->>E2: success=true
+```
+
 - requirements.txt dependencies from each service
 
 frontend service:
