@@ -131,43 +131,7 @@ graph TB
     
     Enq --> Clear
     Clear --> Result
-```
 
-    %% 3. CHAINED EVENTS C & D
-    par Thread C (Depends on A)
-        Note over O: run_chain_event ticks A's clock
-        O->>TV: VerifyCardFormat (C) {o:4, t:2, f:1, s:1}
-        Note over TV: Merges {t:2} with internal {t:3}.<br/>Ticks t -> {o:4, t:4, f:1, s:1}
-        TV-->>O: Return C {o:4, t:4, f:1, s:1}
-    and Thread D (Depends on B)
-        Note over O: run_chain_event ticks B's clock
-        O->>FD: CheckUserFraud (D) {o:4, t:3, f:1, s:1}
-        Note over FD: Merges & Ticks (f:2)
-        FD-->>O: Return D {o:4, t:3, f:2, s:1}
-    end
-
-    %% 4. THE JOIN EVENT (E)
-    Note over O: run_join_event(C, D)<br/>merges C {t:4, f:1} and D {t:3, f:2}<br/>Merged: {o:4, t:4, f:2, s:1}
-    Note over O: Ticks Orch -> {o:5, t:4, f:2, s:1}
-    O->>FD: CheckCardFraud (E) {o:5, t:4, f:2, s:1}
-    Note over FD: Merges & Ticks (f:3)
-    FD-->>O: Return E {o:5, t:4, f:3, s:1}
-
-    %% 5. FINAL EVENT (F)
-    Note over O: run_chain_event(E)
-    O->>S: GenerateSuggestions (F) {o:6, t:4, f:3, s:1}
-    Note over S: Merges & Ticks (s:2)
-    S-->>O: Return F {o:6, t:4, f:3, s:2}
-
-    %% 6. ENQUEUE & CLEAR
-    Note over O: Accumulates all returning threads.<br/>latest_clock = {o:6, t:4, f:3, s:2}
-    O->>Q: Enqueue(latest_clock)
-    Q-->>O: Enqueued
-
-    Note over O: ticks latest_clock -> final_clock<br/>VCf: {o:7, t:4, f:3, s:2}
-    O->>TV: ClearOrder (VCf)
-    O->>FD: ClearOrder (VCf)
-    O->>S: ClearOrder (VCf)
 ```
 This sequence diagram illustrates how vector clocks track causality and asynchronous events across the microservices during a single checkout request. It highlights the Orchestrator branching out concurrent requests, how the Transaction Verification service sequentially merges and increments these incoming clocks to establish a strict mathematical order of operations, and how the final merged clock state is ultimately used to safely enqueue the order and clear the distributed caches.
 
