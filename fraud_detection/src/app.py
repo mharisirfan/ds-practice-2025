@@ -16,6 +16,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 SERVICE_KEY = "fraud_detection"
+EVENT_MARKERS = {
+    "b": "evt_b_done",
+    "c": "evt_c_done",
+    "d": "evt_d_done",
+    "e": "evt_e_done",
+}
 
 
 def merge_clocks(*clocks):
@@ -41,6 +47,7 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
         """Store per-order cached payload and per-order vector clock state."""
         self.order_cache = {}
         self.order_clocks = {}
+        self.order_events = {}
         self.lock = threading.Lock()
 
     @staticmethod
@@ -65,6 +72,15 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
         logger.info("Event %s | order_id=%s | VC=%s", event_name, order_id, clock)
         return dict(clock)
 
+    def _causal_violation(self, order_id, event_name, reason, clock):
+        """Build a consistent causal-violation response and log it."""
+        logger.warning("Causal violation | event=%s | order_id=%s | reason=%s | VC=%s", event_name, order_id, reason, clock)
+        return pb.EventResponse(
+            ok=False,
+            message=f"Causal violation: {reason}",
+            vector_clock=self._clock_msg(clock),
+        )
+
     def InitOrder(self, request, context):
         """Cache order input and initialize vector-clock tracking for this service."""
         with self.lock:
@@ -77,6 +93,7 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
             }
             self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
             clock = self._tick(request.order_id, "init")
+            self.order_events[request.order_id] = {"done": {"init"}}
 
         return pb.InitOrderResponse(success=True, message="Fraud order initialized", vector_clock=self._clock_msg(clock))
 
@@ -84,27 +101,66 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
         """Event d: run user-level fraud checks after user-data validation path."""
         with self.lock:
             data = self.order_cache.get(request.order_id)
-            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
-            clock = self._tick(request.order_id, "d_check_user_fraud")
+            merged = self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            state = self.order_events.get(request.order_id)
 
-        if data is None:
-            return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(clock))
+            if data is None or state is None:
+                return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(merged))
+
+            has_b_vc = merged.get(EVENT_MARKERS["b"], 0) >= 1
+            if not has_b_vc:
+                return self._causal_violation(
+                    request.order_id,
+                    "d_check_user_fraud",
+                    "event d requires completed event b",
+                    merged,
+                )
+
+            if "d" in state["done"]:
+                return self._causal_violation(request.order_id, "d_check_user_fraud", "event d already executed", merged)
+
+            clock = self._tick(request.order_id, "d_check_user_fraud")
 
         text = f"{data['user_id']} {data['user_contact']} {data['user_address']}".lower()
         if "fraud" in text or "scam" in text:
             return pb.EventResponse(ok=False, message="Suspicious user data detected", vector_clock=self._clock_msg(clock))
 
-        return pb.EventResponse(ok=True, message="User fraud check passed", vector_clock=self._clock_msg(clock))
+        with self.lock:
+            state = self.order_events.get(request.order_id)
+            if state is not None:
+                state["done"].add("d")
+            clock = self.order_clocks.get(request.order_id, {})
+            clock[EVENT_MARKERS["d"]] = 1
+            self.order_clocks[request.order_id] = clock
+            out = dict(clock)
+
+        return pb.EventResponse(ok=True, message="User fraud check passed", vector_clock=self._clock_msg(out))
 
     def CheckCardFraud(self, request, context):
         """Event e: run card-level fraud checks after c and d dependencies."""
         with self.lock:
             data = self.order_cache.get(request.order_id)
-            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
-            clock = self._tick(request.order_id, "e_check_card_fraud")
+            merged = self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            state = self.order_events.get(request.order_id)
 
-        if data is None:
-            return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(clock))
+            if data is None or state is None:
+                return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(merged))
+
+            has_c_vc = merged.get(EVENT_MARKERS["c"], 0) >= 1
+            has_d_local = "d" in state["done"]
+            has_d_vc = merged.get(EVENT_MARKERS["d"], 0) >= 1
+            if not (has_c_vc and has_d_local and has_d_vc):
+                return self._causal_violation(
+                    request.order_id,
+                    "e_check_card_fraud",
+                    "event e requires completed events c and d",
+                    merged,
+                )
+
+            if "e" in state["done"]:
+                return self._causal_violation(request.order_id, "e_check_card_fraud", "event e already executed", merged)
+
+            clock = self._tick(request.order_id, "e_check_card_fraud")
 
         card = data["card_number"]
         amount_raw = data["order_amount"]
@@ -122,7 +178,16 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
         if amount > 10000 or amount < 0:
             return pb.EventResponse(ok=False, message="Fraud: suspicious order amount", vector_clock=self._clock_msg(clock))
 
-        return pb.EventResponse(ok=True, message="Card fraud check passed", vector_clock=self._clock_msg(clock))
+        with self.lock:
+            state = self.order_events.get(request.order_id)
+            if state is not None:
+                state["done"].add("e")
+            clock = self.order_clocks.get(request.order_id, {})
+            clock[EVENT_MARKERS["e"]] = 1
+            self.order_clocks[request.order_id] = clock
+            out = dict(clock)
+
+        return pb.EventResponse(ok=True, message="Card fraud check passed", vector_clock=self._clock_msg(out))
 
     def ClearOrder(self, request, context):
         """Clear cached order state only when local VC is causally <= VCf."""
@@ -139,6 +204,7 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
 
             self.order_cache.pop(request.order_id, None)
             self.order_clocks.pop(request.order_id, None)
+            self.order_events.pop(request.order_id, None)
 
         logger.info("ClearOrder success | order_id=%s | VCf=%s", request.order_id, final_clock)
         return pb.ClearOrderResponse(success=True, message="Order state cleared", vector_clock=self._clock_msg(final_clock))

@@ -6,7 +6,7 @@ import socket
 import time
 import uuid
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, CancelledError, ThreadPoolExecutor, as_completed, wait
 
 FILE = __file__ if "__file__" in globals() else os.getenv("PYTHONFILE", "")
 
@@ -386,7 +386,11 @@ def run_chain_event(stop_event, dep_future, name, func):
     if stop_event.is_set():
         return make_result(name, False, "Cancelled due to previous failure", {})
 
-    dep = dep_future.result(timeout=10)
+    try:
+        dep = dep_future.result(timeout=10)
+    except CancelledError:
+        return make_result(name, False, "Cancelled due to previous failure", {})
+
     if not dep["ok"]:
         return make_result(name, False, f"Skipped because dependency {dep['name']} failed", dep["clock"])
 
@@ -405,7 +409,11 @@ def run_chain_event_with_payload(stop_event, dep_future, name, func):
     if stop_event.is_set():
         return make_result(name, False, "Cancelled due to previous failure", {})
 
-    dep = dep_future.result(timeout=10)
+    try:
+        dep = dep_future.result(timeout=10)
+    except CancelledError:
+        return make_result(name, False, "Cancelled due to previous failure", {})
+
     if not dep["ok"]:
         return make_result(name, False, f"Skipped because dependency {dep['name']} failed", dep["clock"])
 
@@ -424,8 +432,11 @@ def run_join_event(stop_event, dep1_future, dep2_future, name, func):
     if stop_event.is_set():
         return make_result(name, False, "Cancelled due to previous failure", {})
 
-    dep1 = dep1_future.result(timeout=10)
-    dep2 = dep2_future.result(timeout=10)
+    try:
+        dep1 = dep1_future.result(timeout=10)
+        dep2 = dep2_future.result(timeout=10)
+    except CancelledError:
+        return make_result(name, False, "Cancelled due to previous failure", {})
 
     if not dep1["ok"] or not dep2["ok"]:
         merged = merge_clocks(dep1["clock"], dep2["clock"])
@@ -562,22 +573,42 @@ def checkout():
                     )
 
                     futures = [future_a, future_b, future_c, future_d, future_e, future_f]
-                    for done in as_completed(futures):
-                        result = done.result(timeout=10)
-                        logger.info(
-                            "Event %s complete | ok=%s | msg=%s | VC=%s",
-                            result["name"],
-                            result["ok"],
-                            result["message"],
-                            result["clock"],
-                        )
-                        if result["clock"]:
-                            latest_clock = merge_clocks(latest_clock, result["clock"])
-                        if not result["ok"] and failure is None:
-                            failure = result
-                            stop_event.set()
-                            for future in futures:
-                                future.cancel()
+                    pending = set(futures)
+
+                    while pending:
+                        done_set, pending = wait(pending, timeout=10, return_when=FIRST_COMPLETED)
+                        if not done_set:
+                            raise TimeoutError("Timed out while waiting for event completion")
+
+                        for done in done_set:
+                            try:
+                                result = done.result(timeout=1)
+                            except CancelledError:
+                                continue
+                            except Exception as event_exc:
+                                failure = make_result("unknown", False, f"Event execution error: {event_exc}", latest_clock)
+                                stop_event.set()
+                                for future in pending:
+                                    future.cancel()
+                                pending.clear()
+                                break
+
+                            logger.info(
+                                "Event %s complete | ok=%s | msg=%s | VC=%s",
+                                result["name"],
+                                result["ok"],
+                                result["message"],
+                                result["clock"],
+                            )
+                            if result["clock"]:
+                                latest_clock = merge_clocks(latest_clock, result["clock"])
+                            if not result["ok"] and failure is None:
+                                failure = result
+                                stop_event.set()
+                                for future in pending:
+                                    future.cancel()
+                                pending.clear()
+                                break
 
                     if failure is None:
                         final_result = future_f.result(timeout=10)

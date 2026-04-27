@@ -15,6 +15,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 SERVICE_KEY = "suggestions"
+EVENT_MARKERS = {
+    "e": "evt_e_done",
+    "f": "evt_f_done",
+}
 
 BOOK_CATALOG = {
     "fiction": [
@@ -92,6 +96,7 @@ class SuggestionsServicer(pb_grpc.SuggestionsServiceServicer):
         """Store per-order cached payload and per-order vector clock state."""
         self.order_cache = {}
         self.order_clocks = {}
+        self.order_events = {}
         self.lock = threading.Lock()
 
     @staticmethod
@@ -116,6 +121,15 @@ class SuggestionsServicer(pb_grpc.SuggestionsServiceServicer):
         logger.info("Event %s | order_id=%s | VC=%s", event_name, order_id, clock)
         return dict(clock)
 
+    def _causal_violation(self, order_id, event_name, reason, clock):
+        """Build a consistent causal-violation response and log it."""
+        logger.warning("Causal violation | event=%s | order_id=%s | reason=%s | VC=%s", event_name, order_id, reason, clock)
+        return pb.SuggestionsResponse(
+            ok=False,
+            message=f"Causal violation: {reason}",
+            vector_clock=self._clock_msg(clock),
+        )
+
     def InitOrder(self, request, context):
         """Cache order input and initialize vector-clock tracking for this service."""
         with self.lock:
@@ -125,6 +139,7 @@ class SuggestionsServicer(pb_grpc.SuggestionsServiceServicer):
             }
             self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
             clock = self._tick(request.order_id, "init")
+            self.order_events[request.order_id] = {"done": {"init"}}
 
         return pb.InitOrderResponse(success=True, message="Suggestions order initialized", vector_clock=self._clock_msg(clock))
 
@@ -132,14 +147,38 @@ class SuggestionsServicer(pb_grpc.SuggestionsServiceServicer):
         """Event f: generate suggestions after upstream checks have passed."""
         with self.lock:
             data = self.order_cache.get(request.order_id)
-            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            merged = self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            state = self.order_events.get(request.order_id)
+
+            if data is None or state is None:
+                return pb.SuggestionsResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(merged))
+
+            has_e_vc = merged.get(EVENT_MARKERS["e"], 0) >= 1
+            if not has_e_vc:
+                return self._causal_violation(
+                    request.order_id,
+                    "f_generate_suggestions",
+                    "event f requires completed event e",
+                    merged,
+                )
+
+            if "f" in state["done"]:
+                return self._causal_violation(request.order_id, "f_generate_suggestions", "event f already executed", merged)
+
             clock = self._tick(request.order_id, "f_generate_suggestions")
 
-        if data is None:
-            return pb.SuggestionsResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(clock))
-
         books = get_suggested_books(data["purchased_items"])
-        response = pb.SuggestionsResponse(ok=True, message="Suggestions generated", vector_clock=self._clock_msg(clock))
+
+        with self.lock:
+            state = self.order_events.get(request.order_id)
+            if state is not None:
+                state["done"].add("f")
+            clock = self.order_clocks.get(request.order_id, {})
+            clock[EVENT_MARKERS["f"]] = 1
+            self.order_clocks[request.order_id] = clock
+            out = dict(clock)
+
+        response = pb.SuggestionsResponse(ok=True, message="Suggestions generated", vector_clock=self._clock_msg(out))
         for book in books:
             item = response.suggested_books.add()
             item.book_id = book["id"]
@@ -163,6 +202,7 @@ class SuggestionsServicer(pb_grpc.SuggestionsServiceServicer):
 
             self.order_cache.pop(request.order_id, None)
             self.order_clocks.pop(request.order_id, None)
+            self.order_events.pop(request.order_id, None)
 
         logger.info("ClearOrder success | order_id=%s | VCf=%s", request.order_id, final_clock)
         return pb.ClearOrderResponse(success=True, message="Order state cleared", vector_clock=self._clock_msg(final_clock))

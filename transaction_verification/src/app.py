@@ -18,6 +18,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 SERVICE_KEY = "transaction_verification"
+EVENT_MARKERS = {
+    "a": "evt_a_done",
+    "b": "evt_b_done",
+    "c": "evt_c_done",
+}
 
 
 def merge_clocks(*clocks):
@@ -43,6 +48,7 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
         """Store per-order cached payload and per-order vector clock state."""
         self.order_cache = {}
         self.order_clocks = {}
+        self.order_events = {}
         self.lock = threading.Lock()
 
     @staticmethod
@@ -67,6 +73,15 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
         logger.info("Event %s | order_id=%s | VC=%s", event_name, order_id, clock)
         return dict(clock)
 
+    def _causal_violation(self, order_id, event_name, reason, clock):
+        """Build a consistent causal-violation response and log it."""
+        logger.warning("Causal violation | event=%s | order_id=%s | reason=%s | VC=%s", event_name, order_id, reason, clock)
+        return pb.EventResponse(
+            ok=False,
+            message=f"Causal violation: {reason}",
+            vector_clock=self._clock_msg(clock),
+        )
+
     def InitOrder(self, request, context):
         """Cache order input and initialize vector-clock tracking for this service."""
         with self.lock:
@@ -79,6 +94,7 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
             }
             self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
             clock = self._tick(request.order_id, "init")
+            self.order_events[request.order_id] = {"done": {"init"}}
 
         return pb.InitOrderResponse(
             success=True,
@@ -90,26 +106,45 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
         """Event a: verify the order contains at least one item."""
         with self.lock:
             data = self.order_cache.get(request.order_id)
-            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
-            clock = self._tick(request.order_id, "a_verify_items")
+            merged = self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            state = self.order_events.get(request.order_id)
 
-        if data is None:
-            return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(clock))
+            if data is None or state is None:
+                return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(merged))
+
+            if "a" in state["done"]:
+                return self._causal_violation(request.order_id, "a_verify_items", "event a already executed", merged)
+
+            clock = self._tick(request.order_id, "a_verify_items")
 
         if not data["items"]:
             return pb.EventResponse(ok=False, message="Cart is empty", vector_clock=self._clock_msg(clock))
 
-        return pb.EventResponse(ok=True, message="Items verified", vector_clock=self._clock_msg(clock))
+        with self.lock:
+            state = self.order_events.get(request.order_id)
+            if state is not None:
+                state["done"].add("a")
+            clock = self.order_clocks.get(request.order_id, {})
+            clock[EVENT_MARKERS["a"]] = 1
+            self.order_clocks[request.order_id] = clock
+            out = dict(clock)
+
+        return pb.EventResponse(ok=True, message="Items verified", vector_clock=self._clock_msg(out))
 
     def VerifyUserData(self, request, context):
         """Event b: verify required user information fields are present."""
         with self.lock:
             data = self.order_cache.get(request.order_id)
-            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
-            clock = self._tick(request.order_id, "b_verify_user_data")
+            merged = self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            state = self.order_events.get(request.order_id)
 
-        if data is None:
-            return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(clock))
+            if data is None or state is None:
+                return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(merged))
+
+            if "b" in state["done"]:
+                return self._causal_violation(request.order_id, "b_verify_user_data", "event b already executed", merged)
+
+            clock = self._tick(request.order_id, "b_verify_user_data")
 
         user_id = data["user_id"].strip() if data["user_id"] else ""
         user_contact = data["user_contact"].strip() if data["user_contact"] else ""
@@ -121,22 +156,55 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
                 vector_clock=self._clock_msg(clock),
             )
 
-        return pb.EventResponse(ok=True, message="User data verified", vector_clock=self._clock_msg(clock))
+        with self.lock:
+            state = self.order_events.get(request.order_id)
+            if state is not None:
+                state["done"].add("b")
+            clock = self.order_clocks.get(request.order_id, {})
+            clock[EVENT_MARKERS["b"]] = 1
+            self.order_clocks[request.order_id] = clock
+            out = dict(clock)
+
+        return pb.EventResponse(ok=True, message="User data verified", vector_clock=self._clock_msg(out))
 
     def VerifyCardFormat(self, request, context):
         """Event c: verify card format after upstream dependency is satisfied."""
         with self.lock:
             data = self.order_cache.get(request.order_id)
-            self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
-            clock = self._tick(request.order_id, "c_verify_card_format")
+            merged = self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            state = self.order_events.get(request.order_id)
 
-        if data is None:
-            return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(clock))
+            if data is None or state is None:
+                return pb.EventResponse(ok=False, message="Order not initialized", vector_clock=self._clock_msg(merged))
+
+            has_a_local = "a" in state["done"]
+            has_a_vc = merged.get(EVENT_MARKERS["a"], 0) >= 1
+            if not (has_a_local and has_a_vc):
+                return self._causal_violation(
+                    request.order_id,
+                    "c_verify_card_format",
+                    "event c requires completed event a",
+                    merged,
+                )
+
+            if "c" in state["done"]:
+                return self._causal_violation(request.order_id, "c_verify_card_format", "event c already executed", merged)
+
+            clock = self._tick(request.order_id, "c_verify_card_format")
 
         if not re.match(r"^\d{16}$", data["credit_card"]):
             return pb.EventResponse(ok=False, message="Invalid credit card format", vector_clock=self._clock_msg(clock))
 
-        return pb.EventResponse(ok=True, message="Credit card format verified", vector_clock=self._clock_msg(clock))
+        with self.lock:
+            state = self.order_events.get(request.order_id)
+            if state is not None:
+                state["done"].add("c")
+            clock = self.order_clocks.get(request.order_id, {})
+            clock[EVENT_MARKERS["c"]] = 1
+            self.order_clocks[request.order_id] = clock
+            out = dict(clock)
+
+        return pb.EventResponse(ok=True, message="Credit card format verified", vector_clock=self._clock_msg(out))
 
     def ClearOrder(self, request, context):
         """Clear cached order state only when local VC is causally <= VCf."""
@@ -153,6 +221,7 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
 
             self.order_cache.pop(request.order_id, None)
             self.order_clocks.pop(request.order_id, None)
+            self.order_events.pop(request.order_id, None)
 
         logger.info("ClearOrder success | order_id=%s | VCf=%s", request.order_id, final_clock)
         return pb.ClearOrderResponse(
