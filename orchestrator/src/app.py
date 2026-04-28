@@ -5,8 +5,7 @@ import logging
 import socket
 import time
 import uuid
-import threading
-from concurrent.futures import FIRST_COMPLETED, CancelledError, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 FILE = __file__ if "__file__" in globals() else os.getenv("PYTHONFILE", "")
 
@@ -40,6 +39,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 ORCH_KEY = "orchestrator"
+SUGGESTED_BOOKS_METADATA_KEY = "suggested-books"
 CLEAR_RETRY_ATTEMPTS = 3
 CLEAR_RETRY_BACKOFF_SEC = 0.3
 
@@ -109,6 +109,11 @@ def to_oq_clock(clock):
 
 def rpc_init_transaction(order_id, user_id, contact, address, credit_card, items, clock):
     """Initialize order cache and initial clock state in transaction-verification service."""
+    logger.info(
+        "HANDOFF orchestrator -> transaction_verification | event=init_order | order_id=%s | VC=%s",
+        order_id,
+        clock,
+    )
     with grpc.insecure_channel("transaction_verification:50052") as channel:
         stub = tv_grpc.TransactionVerificationServiceStub(channel)
         response = stub.InitOrder(
@@ -127,6 +132,11 @@ def rpc_init_transaction(order_id, user_id, contact, address, credit_card, items
 
 def rpc_init_fraud(order_id, user_id, contact, address, credit_card, order_amount, clock):
     """Initialize order cache and initial clock state in fraud-detection service."""
+    logger.info(
+        "HANDOFF orchestrator -> fraud_detection | event=init_order | order_id=%s | VC=%s",
+        order_id,
+        clock,
+    )
     with grpc.insecure_channel("fraud_detection:50051") as channel:
         stub = fraud_grpc.FraudDetectionServiceStub(channel)
         response = stub.InitOrder(
@@ -145,6 +155,11 @@ def rpc_init_fraud(order_id, user_id, contact, address, credit_card, order_amoun
 
 def rpc_init_suggestions(order_id, user_id, items, clock):
     """Initialize order cache and initial clock state in suggestions service."""
+    logger.info(
+        "HANDOFF orchestrator -> suggestions | event=init_order | order_id=%s | VC=%s",
+        order_id,
+        clock,
+    )
     with grpc.insecure_channel("suggestions:50053") as channel:
         stub = sug_grpc.SuggestionsServiceStub(channel)
         response = stub.InitOrder(
@@ -158,57 +173,37 @@ def rpc_init_suggestions(order_id, user_id, items, clock):
     return response.success, response.message, dict(response.vector_clock.clock)
 
 
-def rpc_a_verify_items(order_id, clock):
-    """Event a: validate that the order has at least one item."""
+def rpc_start_verification_flow(order_id, clock):
+    """Start the backend-owned event flow. Services propagate clocks after this point."""
+    logger.info(
+        "HANDOFF orchestrator -> transaction_verification | event=start_verification_flow | order_id=%s | VC=%s",
+        order_id,
+        clock,
+    )
     with grpc.insecure_channel("transaction_verification:50052") as channel:
         stub = tv_grpc.TransactionVerificationServiceStub(channel)
-        response = stub.VerifyItems(tv_pb.EventRequest(order_id=order_id, vector_clock=to_tv_clock(clock)))
-    return response.ok, response.message, dict(response.vector_clock.clock)
-
-
-def rpc_b_verify_user_data(order_id, clock):
-    """Event b: validate mandatory user fields (name, contact, address)."""
-    with grpc.insecure_channel("transaction_verification:50052") as channel:
-        stub = tv_grpc.TransactionVerificationServiceStub(channel)
-        response = stub.VerifyUserData(tv_pb.EventRequest(order_id=order_id, vector_clock=to_tv_clock(clock)))
-    return response.ok, response.message, dict(response.vector_clock.clock)
-
-
-def rpc_c_verify_card_format(order_id, clock):
-    """Event c: validate the card format after event a."""
-    with grpc.insecure_channel("transaction_verification:50052") as channel:
-        stub = tv_grpc.TransactionVerificationServiceStub(channel)
-        response = stub.VerifyCardFormat(tv_pb.EventRequest(order_id=order_id, vector_clock=to_tv_clock(clock)))
-    return response.ok, response.message, dict(response.vector_clock.clock)
-
-
-def rpc_d_check_user_fraud(order_id, clock):
-    """Event d: run fraud checks on user-related fields after event b."""
-    with grpc.insecure_channel("fraud_detection:50051") as channel:
-        stub = fraud_grpc.FraudDetectionServiceStub(channel)
-        response = stub.CheckUserFraud(fraud_pb.EventRequest(order_id=order_id, vector_clock=to_fraud_clock(clock)))
-    return response.ok, response.message, dict(response.vector_clock.clock)
-
-
-def rpc_e_check_card_fraud(order_id, clock):
-    """Event e: run card fraud checks after both c and d complete."""
-    with grpc.insecure_channel("fraud_detection:50051") as channel:
-        stub = fraud_grpc.FraudDetectionServiceStub(channel)
-        response = stub.CheckCardFraud(fraud_pb.EventRequest(order_id=order_id, vector_clock=to_fraud_clock(clock)))
-    return response.ok, response.message, dict(response.vector_clock.clock)
-
-
-def rpc_f_generate_suggestions(order_id, clock):
-    """Event f: generate recommendations after fraud checks are complete."""
-    with grpc.insecure_channel("suggestions:50053") as channel:
-        stub = sug_grpc.SuggestionsServiceStub(channel)
-        response = stub.GenerateSuggestions(sug_pb.EventRequest(order_id=order_id, vector_clock=to_sug_clock(clock)))
-    books = [{"bookId": b.book_id, "title": b.title, "author": b.author} for b in response.suggested_books]
-    return response.ok, response.message, books, dict(response.vector_clock.clock)
+        response, call = stub.StartVerificationFlow.with_call(
+            tv_pb.EventRequest(order_id=order_id, vector_clock=to_tv_clock(clock))
+        )
+    metadata = {key: value for key, value in (call.trailing_metadata() or [])}
+    books = json.loads(metadata.get(SUGGESTED_BOOKS_METADATA_KEY, "[]"))
+    out_clock = dict(response.vector_clock.clock)
+    logger.info(
+        "RETURN transaction_verification -> orchestrator | event=start_verification_flow | order_id=%s | ok=%s | VC=%s",
+        order_id,
+        response.ok,
+        out_clock,
+    )
+    return response.ok, response.message, books, out_clock
 
 
 def rpc_enqueue_order(order_id, user_id, items, clock):
     """Enqueue an approved order for executor-side critical-section processing."""
+    logger.info(
+        "HANDOFF orchestrator -> order_queue | event=enqueue_approved_order | order_id=%s | VC=%s",
+        order_id,
+        clock,
+    )
     with grpc.insecure_channel("order_queue:50060") as channel:
         stub = oq_grpc.OrderQueueServiceStub(channel)
         request = oq_pb.EnqueueRequest(
@@ -370,89 +365,6 @@ def broadcast_final_clear(order_id, final_clock):
     }
 
 
-def make_result(name, ok, message, clock, suggested_books=None):
-    """Normalize event execution results into a common structure."""
-    return {
-        "name": name,
-        "ok": ok,
-        "message": message,
-        "clock": dict(clock),
-        "suggested_books": suggested_books or [],
-    }
-
-
-def run_chain_event(stop_event, dep_future, name, func):
-    """Run a dependent event once its predecessor succeeds, propagating cancellation."""
-    if stop_event.is_set():
-        return make_result(name, False, "Cancelled due to previous failure", {})
-
-    try:
-        dep = dep_future.result(timeout=10)
-    except CancelledError:
-        return make_result(name, False, "Cancelled due to previous failure", {})
-
-    if not dep["ok"]:
-        return make_result(name, False, f"Skipped because dependency {dep['name']} failed", dep["clock"])
-
-    if stop_event.is_set():
-        return make_result(name, False, "Cancelled due to previous failure", dep["clock"])
-
-    clock = tick_orchestrator(dep["clock"])
-    ok, message, out_clock = func(clock)
-    if not ok:
-        stop_event.set()
-    return make_result(name, ok, message, out_clock)
-
-
-def run_chain_event_with_payload(stop_event, dep_future, name, func):
-    """Run a dependent event that returns both status and payload (suggestions)."""
-    if stop_event.is_set():
-        return make_result(name, False, "Cancelled due to previous failure", {})
-
-    try:
-        dep = dep_future.result(timeout=10)
-    except CancelledError:
-        return make_result(name, False, "Cancelled due to previous failure", {})
-
-    if not dep["ok"]:
-        return make_result(name, False, f"Skipped because dependency {dep['name']} failed", dep["clock"])
-
-    if stop_event.is_set():
-        return make_result(name, False, "Cancelled due to previous failure", dep["clock"])
-
-    clock = tick_orchestrator(dep["clock"])
-    ok, message, payload, out_clock = func(clock)
-    if not ok:
-        stop_event.set()
-    return make_result(name, ok, message, out_clock, suggested_books=payload)
-
-
-def run_join_event(stop_event, dep1_future, dep2_future, name, func):
-    """Run a join event that requires two predecessors and merges their vector clocks."""
-    if stop_event.is_set():
-        return make_result(name, False, "Cancelled due to previous failure", {})
-
-    try:
-        dep1 = dep1_future.result(timeout=10)
-        dep2 = dep2_future.result(timeout=10)
-    except CancelledError:
-        return make_result(name, False, "Cancelled due to previous failure", {})
-
-    if not dep1["ok"] or not dep2["ok"]:
-        merged = merge_clocks(dep1["clock"], dep2["clock"])
-        return make_result(name, False, "Skipped because dependency failed", merged)
-
-    if stop_event.is_set():
-        return make_result(name, False, "Cancelled due to previous failure", merge_clocks(dep1["clock"], dep2["clock"]))
-
-    merged = merge_clocks(dep1["clock"], dep2["clock"])
-    clock = tick_orchestrator(merged)
-    ok, message, out_clock = func(clock)
-    if not ok:
-        stop_event.set()
-    return make_result(name, ok, message, out_clock)
-
-
 @app.route("/", methods=["GET"])
 def index():
     """Health route for basic orchestrator availability checks."""
@@ -526,103 +438,17 @@ def checkout():
             if not (ok_a and ok_b and ok_c):
                 logger.error("Init failed | order_id=%s | msg=%s | VC=%s", order_id, [msg_a, msg_b, msg_c], init_clock)
             else:
-                stop_event = threading.Event()
-                failure = None
+                flow_clock = tick_orchestrator(init_clock)
+                ok, message, flow_books, out_clock = rpc_start_verification_flow(order_id, flow_clock)
+                latest_clock = merge_clocks(latest_clock, out_clock)
 
-                with ThreadPoolExecutor(max_workers=6) as pool:
-                    future_a = pool.submit(
-                        lambda: make_result(
-                            "a",
-                            *rpc_a_verify_items(order_id, tick_orchestrator(init_clock)),
-                        )
-                    )
-                    future_b = pool.submit(
-                        lambda: make_result(
-                            "b",
-                            *rpc_b_verify_user_data(order_id, tick_orchestrator(init_clock)),
-                        )
-                    )
-                    future_c = pool.submit(
-                        run_chain_event,
-                        stop_event,
-                        future_a,
-                        "c",
-                        lambda c_clock: rpc_c_verify_card_format(order_id, c_clock),
-                    )
-                    future_d = pool.submit(
-                        run_chain_event,
-                        stop_event,
-                        future_b,
-                        "d",
-                        lambda d_clock: rpc_d_check_user_fraud(order_id, d_clock),
-                    )
-                    future_e = pool.submit(
-                        run_join_event,
-                        stop_event,
-                        future_c,
-                        future_d,
-                        "e",
-                        lambda e_clock: rpc_e_check_card_fraud(order_id, e_clock),
-                    )
-                    future_f = pool.submit(
-                        run_chain_event_with_payload,
-                        stop_event,
-                        future_e,
-                        "f",
-                        lambda f_clock: rpc_f_generate_suggestions(order_id, f_clock),
-                    )
-
-                    futures = [future_a, future_b, future_c, future_d, future_e, future_f]
-                    pending = set(futures)
-
-                    while pending:
-                        done_set, pending = wait(pending, timeout=10, return_when=FIRST_COMPLETED)
-                        if not done_set:
-                            raise TimeoutError("Timed out while waiting for event completion")
-
-                        for done in done_set:
-                            try:
-                                result = done.result(timeout=1)
-                            except CancelledError:
-                                continue
-                            except Exception as event_exc:
-                                failure = make_result("unknown", False, f"Event execution error: {event_exc}", latest_clock)
-                                stop_event.set()
-                                for future in pending:
-                                    future.cancel()
-                                pending.clear()
-                                break
-
-                            logger.info(
-                                "Event %s complete | ok=%s | msg=%s | VC=%s",
-                                result["name"],
-                                result["ok"],
-                                result["message"],
-                                result["clock"],
-                            )
-                            if result["clock"]:
-                                latest_clock = merge_clocks(latest_clock, result["clock"])
-                            if not result["ok"] and failure is None:
-                                failure = result
-                                stop_event.set()
-                                for future in pending:
-                                    future.cancel()
-                                pending.clear()
-                                break
-
-                    if failure is None:
-                        final_result = future_f.result(timeout=10)
-                    else:
-                        final_result = make_result("f", False, "Not completed", failure["clock"])
-
-                if failure is not None:
+                if ok:
+                    status = "Order Approved"
+                    books = flow_books
+                else:
                     status = "Order Rejected"
                     books = []
-                    latest_clock = merge_clocks(latest_clock, final_result["clock"])
-                else:
-                    status = "Order Approved"
-                    books = final_result["suggested_books"]
-                    latest_clock = merge_clocks(latest_clock, final_result["clock"])
+                    logger.warning("Backend verification flow rejected | order_id=%s | message=%s", order_id, message)
 
                 if status == "Order Approved":
                     enq_ok, enq_msg = rpc_enqueue_order(order_id, user_id, item_list, latest_clock)

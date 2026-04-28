@@ -14,10 +14,16 @@ sys.path.insert(0, transaction_verification_grpc_path)
 import transaction_verification_pb2 as pb
 import transaction_verification_pb2_grpc as pb_grpc
 
+fraud_detection_grpc_path = os.path.abspath(os.path.join(FILE, "../../../utils/pb/fraud_detection"))
+sys.path.insert(0, fraud_detection_grpc_path)
+import fraud_detection_pb2 as fraud_pb
+import fraud_detection_pb2_grpc as fraud_grpc
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 SERVICE_KEY = "transaction_verification"
+SUGGESTED_BOOKS_METADATA_KEY = "suggested-books"
 EVENT_MARKERS = {
     "a": "evt_a_done",
     "b": "evt_b_done",
@@ -55,6 +61,13 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
     def _clock_msg(clock_dict):
         """Convert dictionary clock into protobuf vector clock message."""
         msg = pb.VectorClock()
+        msg.clock.update(clock_dict)
+        return msg
+
+    @staticmethod
+    def _fraud_clock_msg(clock_dict):
+        """Convert dictionary clock into fraud-detection protobuf vector clock message."""
+        msg = fraud_pb.VectorClock()
         msg.clock.update(clock_dict)
         return msg
 
@@ -101,6 +114,152 @@ class TransactionVerificationServicer(pb_grpc.TransactionVerificationServiceServ
             message="Transaction order initialized",
             vector_clock=self._clock_msg(clock),
         )
+
+    def StartVerificationFlow(self, request, context):
+        """Start backend-owned event ordering and service-to-service clock propagation."""
+        with self.lock:
+            merged = self._merge_incoming(request.order_id, dict(request.vector_clock.clock))
+            parent_clock = self._tick(request.order_id, "start_verification_flow")
+
+        failure = {"message": None}
+
+        def run_items_branch():
+            try:
+                logger.info(
+                    "LOCAL DISPATCH transaction_verification -> transaction_verification | branch=items | event=a_verify_items | order_id=%s | VC=%s",
+                    request.order_id,
+                    parent_clock,
+                )
+                with grpc.insecure_channel("localhost:50052") as channel:
+                    stub = pb_grpc.TransactionVerificationServiceStub(channel)
+                    event_a = stub.VerifyItems(
+                        pb.EventRequest(order_id=request.order_id, vector_clock=self._clock_msg(parent_clock))
+                    )
+                    if not event_a.ok:
+                        failure["message"] = event_a.message
+                        return False, dict(event_a.vector_clock.clock)
+
+                    logger.info(
+                        "LOCAL DISPATCH transaction_verification -> transaction_verification | branch=items | event=c_verify_card_format | order_id=%s | VC=%s",
+                        request.order_id,
+                        dict(event_a.vector_clock.clock),
+                    )
+                    event_c = stub.VerifyCardFormat(
+                        pb.EventRequest(order_id=request.order_id, vector_clock=event_a.vector_clock)
+                    )
+                    if not event_c.ok:
+                        failure["message"] = event_c.message
+                        return False, dict(event_c.vector_clock.clock)
+
+                    return True, dict(event_c.vector_clock.clock)
+            except Exception as exc:
+                failure["message"] = str(exc)
+                return False, parent_clock
+
+        def run_user_branch():
+            try:
+                logger.info(
+                    "LOCAL DISPATCH transaction_verification -> transaction_verification | branch=user | event=b_verify_user_data | order_id=%s | VC=%s",
+                    request.order_id,
+                    parent_clock,
+                )
+                with grpc.insecure_channel("localhost:50052") as channel:
+                    stub = pb_grpc.TransactionVerificationServiceStub(channel)
+                    event_b = stub.VerifyUserData(
+                        pb.EventRequest(order_id=request.order_id, vector_clock=self._clock_msg(parent_clock))
+                    )
+                    if not event_b.ok:
+                        failure["message"] = event_b.message
+                        return False, dict(event_b.vector_clock.clock)
+
+                logger.info(
+                    "HANDOFF transaction_verification -> fraud_detection | event=d_check_user_fraud | order_id=%s | VC=%s",
+                    request.order_id,
+                    dict(event_b.vector_clock.clock),
+                )
+                with grpc.insecure_channel("fraud_detection:50051") as channel:
+                    stub = fraud_grpc.FraudDetectionServiceStub(channel)
+                    event_d = stub.CheckUserFraud(
+                        fraud_pb.EventRequest(
+                            order_id=request.order_id,
+                            vector_clock=self._fraud_clock_msg(dict(event_b.vector_clock.clock)),
+                        )
+                    )
+                    if not event_d.ok:
+                        failure["message"] = event_d.message
+                        return False, dict(event_d.vector_clock.clock)
+
+                    return True, dict(event_d.vector_clock.clock)
+            except Exception as exc:
+                failure["message"] = str(exc)
+                return False, parent_clock
+
+        with futures.ThreadPoolExecutor(max_workers=2) as pool:
+            items_future = pool.submit(run_items_branch)
+            user_future = pool.submit(run_user_branch)
+            items_ok, clock_c = items_future.result(timeout=10)
+            user_ok, clock_d = user_future.result(timeout=10)
+
+        if not (items_ok and user_ok):
+            merged_clock = merge_clocks(merged, clock_c, clock_d)
+            with self.lock:
+                self.order_clocks[request.order_id] = merged_clock
+            context.set_trailing_metadata(((SUGGESTED_BOOKS_METADATA_KEY, "[]"),))
+            return pb.EventResponse(
+                ok=False,
+                message=failure["message"] or "Verification flow failed",
+                vector_clock=self._clock_msg(merged_clock),
+            )
+
+        with self.lock:
+            join_clock = merge_clocks(self.order_clocks.get(request.order_id, {}), clock_c, clock_d)
+            self.order_clocks[request.order_id] = join_clock
+            join_clock = self._tick(request.order_id, "join_c_d_before_fraud")
+
+        try:
+            logger.info(
+                "HANDOFF transaction_verification -> fraud_detection | event=e_check_card_fraud | order_id=%s | VC=%s",
+                request.order_id,
+                join_clock,
+            )
+            with grpc.insecure_channel("fraud_detection:50051") as channel:
+                stub = fraud_grpc.FraudDetectionServiceStub(channel)
+                event_e, call = stub.CheckCardFraud.with_call(
+                    fraud_pb.EventRequest(
+                        order_id=request.order_id,
+                        vector_clock=self._fraud_clock_msg(join_clock),
+                    )
+                )
+
+            books_payload = "[]"
+            for key, value in call.trailing_metadata() or []:
+                if key == SUGGESTED_BOOKS_METADATA_KEY:
+                    books_payload = value
+                    break
+
+            out_clock = merge_clocks(join_clock, dict(event_e.vector_clock.clock))
+            with self.lock:
+                self.order_clocks[request.order_id] = out_clock
+
+            logger.info(
+                "RETURN fraud_detection -> transaction_verification | event=e_check_card_fraud | order_id=%s | ok=%s | VC=%s",
+                request.order_id,
+                event_e.ok,
+                out_clock,
+            )
+            context.set_trailing_metadata(((SUGGESTED_BOOKS_METADATA_KEY, books_payload),))
+            return pb.EventResponse(
+                ok=event_e.ok,
+                message=event_e.message,
+                vector_clock=self._clock_msg(out_clock),
+            )
+        except Exception as exc:
+            context.set_trailing_metadata(((SUGGESTED_BOOKS_METADATA_KEY, "[]"),))
+            return pb.EventResponse(
+                ok=False,
+                message=str(exc),
+                vector_clock=self._clock_msg(join_clock),
+            )
 
     def VerifyItems(self, request, context):
         """Event a: verify the order contains at least one item."""

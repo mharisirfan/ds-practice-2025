@@ -4,6 +4,7 @@ package transaction_verification;
 
 service TransactionVerificationService {
   rpc InitOrder (InitOrderRequest) returns (InitOrderResponse);
+  rpc StartVerificationFlow (EventRequest) returns (EventResponse);
   rpc VerifyItems (EventRequest) returns (EventResponse);
   rpc VerifyUserData (EventRequest) returns (EventResponse);
   rpc VerifyCardFormat (EventRequest) returns (EventResponse);

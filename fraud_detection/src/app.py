@@ -5,6 +5,7 @@ from concurrent import futures
 import logging
 import re
 import threading
+import json
 
 FILE = __file__ if "__file__" in globals() else os.getenv("PYTHONFILE", "")
 fraud_detection_grpc_path = os.path.abspath(os.path.join(FILE, "../../../utils/pb/fraud_detection"))
@@ -12,10 +13,16 @@ sys.path.insert(0, fraud_detection_grpc_path)
 import fraud_detection_pb2 as pb
 import fraud_detection_pb2_grpc as pb_grpc
 
+suggestions_grpc_path = os.path.abspath(os.path.join(FILE, "../../../utils/pb/suggestions"))
+sys.path.insert(0, suggestions_grpc_path)
+import suggestions_pb2 as sug_pb
+import suggestions_pb2_grpc as sug_grpc
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 SERVICE_KEY = "fraud_detection"
+SUGGESTED_BOOKS_METADATA_KEY = "suggested-books"
 EVENT_MARKERS = {
     "b": "evt_b_done",
     "c": "evt_c_done",
@@ -54,6 +61,13 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
     def _clock_msg(clock_dict):
         """Convert dictionary clock into protobuf vector clock message."""
         msg = pb.VectorClock()
+        msg.clock.update(clock_dict)
+        return msg
+
+    @staticmethod
+    def _to_suggestions_clock(clock_dict):
+        """Convert dictionary clock into suggestions protobuf vector clock message."""
+        msg = sug_pb.VectorClock()
         msg.clock.update(clock_dict)
         return msg
 
@@ -186,6 +200,35 @@ class FraudDetectionService(pb_grpc.FraudDetectionServiceServicer):
             clock[EVENT_MARKERS["e"]] = 1
             self.order_clocks[request.order_id] = clock
             out = dict(clock)
+
+        try:
+            logger.info(
+                "HANDOFF fraud_detection -> suggestions | event=f_generate_suggestions | order_id=%s | VC=%s",
+                request.order_id,
+                out,
+            )
+            with grpc.insecure_channel("suggestions:50053") as channel:
+                stub = sug_grpc.SuggestionsServiceStub(channel)
+                response = stub.GenerateSuggestions(
+                    sug_pb.EventRequest(order_id=request.order_id, vector_clock=self._to_suggestions_clock(out))
+                )
+            books = [
+                {"bookId": b.book_id, "title": b.title, "author": b.author}
+                for b in response.suggested_books
+            ]
+            out = merge_clocks(out, dict(response.vector_clock.clock))
+            with self.lock:
+                self.order_clocks[request.order_id] = out
+            logger.info(
+                "RETURN suggestions -> fraud_detection | event=f_generate_suggestions | order_id=%s | ok=%s | VC=%s",
+                request.order_id,
+                response.ok,
+                out,
+            )
+            context.set_trailing_metadata(((SUGGESTED_BOOKS_METADATA_KEY, json.dumps(books)),))
+        except Exception as exc:
+            logger.warning("Suggestions call failed | order_id=%s | error=%s", request.order_id, exc)
+            context.set_trailing_metadata(((SUGGESTED_BOOKS_METADATA_KEY, "[]"),))
 
         return pb.EventResponse(ok=True, message="Card fraud check passed", vector_clock=self._clock_msg(out))
 

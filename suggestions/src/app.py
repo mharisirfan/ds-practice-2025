@@ -168,6 +168,11 @@ class SuggestionsServicer(pb_grpc.SuggestionsServiceServicer):
             clock = self._tick(request.order_id, "f_generate_suggestions")
 
         books = get_suggested_books(data["purchased_items"])
+        logger.info(
+            "SERVICE EVENT suggestions | event=f_generate_suggestions | order_id=%s | received_from=fraud_detection | VC=%s",
+            request.order_id,
+            clock,
+        )
 
         with self.lock:
             state = self.order_events.get(request.order_id)
