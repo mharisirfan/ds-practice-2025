@@ -141,6 +141,7 @@ services:
       - PYTHONFILE=/app/order_executor/src/app.py
       - EXECUTOR_ID=executor-1
       - ORDER_QUEUE_ADDR=order_queue:50060
+      - DB_PRIMARY_ADDR=books_db_primary:50050
       - EXECUTOR_PORT=50070
       - LEASE_SECONDS=2
       - POLL_SECONDS=1
@@ -149,6 +150,7 @@ services:
       - DEBUGPY_WAIT_FOR_CLIENT=FALSE
     depends_on:
       - order_queue
+      - books_db_primary
     volumes:
       - ./utils:/app/utils
       - ./order_executor/src:/app/order_executor/src
@@ -164,6 +166,7 @@ services:
       - PYTHONFILE=/app/order_executor/src/app.py
       - EXECUTOR_ID=executor-2
       - ORDER_QUEUE_ADDR=order_queue:50060
+      - DB_PRIMARY_ADDR=books_db_primary:50050
       - EXECUTOR_PORT=50071
       - LEASE_SECONDS=2
       - POLL_SECONDS=1
@@ -172,6 +175,68 @@ services:
       - DEBUGPY_WAIT_FOR_CLIENT=FALSE
     depends_on:
       - order_queue
+      - books_db_primary
     volumes:
       - ./utils:/app/utils
       - ./order_executor/src:/app/order_executor/src
+
+  # Books Database Services - Primary-Backup Replication
+  # Primary: writes are applied locally then propagated to backups
+  # Backups: receive writes from primary for synchronization
+  
+  books_db_primary:
+    build:
+      context: ./
+      dockerfile: ./books_database/Dockerfile
+    ports:
+      - ${BOOKS_DB_PRIMARY_PORT:-50050}:50050
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/books_database/src/app.py
+      - REPLICA_ID=db-primary
+      - DB_PORT=50050
+      - IS_PRIMARY=true
+      - BACKUP_ADDRS=books_db_backup_1:50051,books_db_backup_2:50052
+    depends_on:
+      - order_queue
+    volumes:
+      - ./utils:/app/utils
+      - ./books_database/src:/app/books_database/src
+
+  books_db_backup_1:
+    build:
+      context: ./
+      dockerfile: ./books_database/Dockerfile
+    ports:
+      - ${BOOKS_DB_BACKUP_1_PORT:-50051}:50051
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/books_database/src/app.py
+      - REPLICA_ID=db-backup-1
+      - DB_PORT=50051
+      - IS_PRIMARY=false
+      - BACKUP_ADDRS=
+    depends_on:
+      - order_queue
+    volumes:
+      - ./utils:/app/utils
+      - ./books_database/src:/app/books_database/src
+
+  books_db_backup_2:
+    build:
+      context: ./
+      dockerfile: ./books_database/Dockerfile
+    ports:
+      - ${BOOKS_DB_BACKUP_2_PORT:-50052}:50052
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/books_database/src/app.py
+      - REPLICA_ID=db-backup-2
+      - DB_PORT=50052
+      - IS_PRIMARY=false
+      - BACKUP_ADDRS=
+    depends_on:
+      - order_queue
+    volumes:
+      - ./utils:/app/utils
+      - ./books_database/src:/app/books_database/src

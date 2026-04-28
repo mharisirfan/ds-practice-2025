@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package books_database;
+
+service BooksDatabase {
+  // Client-facing RPC operations
+  rpc Read (ReadRequest) returns (ReadResponse);
+  rpc Write (WriteRequest) returns (WriteResponse);
+  
+  // Internal replica-to-replica synchronization (Primary to Backup)
+  rpc ReplicateWrite (ReplicateWriteRequest) returns (ReplicateWriteResponse);
+  rpc Ping (PingRequest) returns (PingResponse);
+}
+
+// ========== Client-Facing Messages ==========
+
+message ReadRequest {
+  string title = 1;  // Book title (key)
+}
+
+message ReadResponse {
+  bool success = 1;
+  string message = 2;
+  int32 stock = 3;   // Stock quantity (value)
+  int64 version = 4; // Version number for consistency tracking
+}
+
+message WriteRequest {
+  string title = 1;  // Book title (key)
+  int32 new_stock = 2;  // New stock quantity (value)
+  string client_id = 3;  // Client identifier for handling concurrent writes
+  string order_id = 4;   // Order ID for traceability
+}
+
+message WriteResponse {
+  bool success = 1;
+  string message = 2;
+  int64 version = 3;  // Version after write
+}
+
+// ========== Internal Replication Messages ==========
+
+message ReplicateWriteRequest {
+  string title = 1;
+  int32 new_stock = 2;
+  string client_id = 3;
+  string order_id = 4;
+  int64 version = 5;  // Version from primary
+}
+
+message ReplicateWriteResponse {
+  bool success = 1;
+  string message = 2;
+  int64 version = 3;
+}
+
+// ========== Health Check ==========
+
+message PingRequest {
+  string replica_id = 1;
+}
+
+message PingResponse {
+  bool alive = 1;
+  string replica_id = 2;
+  bool is_primary = 3;
+  int32 replica_count = 4;
+}
