@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package books;
+
+service BooksDatabase {
+    rpc Read (ReadRequest) returns (ReadResponse);
+    rpc Write (WriteRequest) returns (WriteResponse);
+}
+
+message ReadRequest {
+    string title = 1;
+}
+
+message ReadResponse {
+    int32 stock = 1;
+}
+
+message WriteRequest {
+    string title = 1;
+    int32 new_stock = 2;
+    // BONUS: Compare-And-Swap validation
+    int32 expected_stock = 3; 
+    // Flag to tell backups this is an internal sync, not a client request
+    bool is_replica_sync = 4; 
+}
+
+message WriteResponse {
+    bool success = 1;
+    string message = 2;
+}

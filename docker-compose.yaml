@@ -31,7 +31,8 @@ services:
       # The PYTHONFILE environment variable specifies the absolute entry point of the application
       # Check app.py in the orchestrator directory to see how this is used
       - PYTHONFILE=/app/orchestrator/src/app.py
-      - DEBUGPY_ENABLED=TRUE
+      - PYTHONPATH=/app
+      - DEBUGPY_ENABLED=FALSE
       - DEBUGPY_PORT=5678
       - DEBUGPY_WAIT_FOR_CLIENT=FALSE
     volumes:
@@ -57,7 +58,7 @@ services:
       # The PYTHONFILE environment variable specifies the absolute entry point of the application
       # Check app.py in the fraud_detection directory to see how this is used
       - PYTHONFILE=/app/fraud_detection/src/app.py
-      - DEBUGPY_ENABLED=TRUE
+      - DEBUGPY_ENABLED=FALSE
       - DEBUGPY_PORT=5678
       - DEBUGPY_WAIT_FOR_CLIENT=FALSE
     volumes:
@@ -81,7 +82,7 @@ services:
       # The PYTHONFILE environment variable specifies the absolute entry point of the application
       # Check app.py in the transaction_verification directory to see how this is used
       - PYTHONFILE=/app/transaction_verification/src/app.py
-      - DEBUGPY_ENABLED=TRUE
+      - DEBUGPY_ENABLED=FALSE
       - DEBUGPY_PORT=5678
       - DEBUGPY_WAIT_FOR_CLIENT=FALSE
     volumes:
@@ -105,7 +106,7 @@ services:
       # The PYTHONFILE environment variable specifies the absolute entry point of the application
       # Check app.py in the suggestions directory to see how this is used
       - PYTHONFILE=/app/suggestions/src/app.py
-      - DEBUGPY_ENABLED=TRUE
+      - DEBUGPY_ENABLED=FALSE
       - DEBUGPY_PORT=5678
       - DEBUGPY_WAIT_FOR_CLIENT=FALSE
     volumes:
@@ -123,7 +124,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=TRUE
       - PYTHONFILE=/app/order_queue/src/app.py
-      - DEBUGPY_ENABLED=TRUE
+      - PYTHONPATH=/app
+      - DEBUGPY_ENABLED=FALSE
       - DEBUGPY_PORT=5678
       - DEBUGPY_WAIT_FOR_CLIENT=FALSE
     volumes:
@@ -139,12 +141,13 @@ services:
     environment:
       - PYTHONUNBUFFERED=TRUE
       - PYTHONFILE=/app/order_executor/src/app.py
+      - PYTHONPATH=/app
       - EXECUTOR_ID=executor-1
       - ORDER_QUEUE_ADDR=order_queue:50060
       - EXECUTOR_PORT=50070
       - LEASE_SECONDS=2
       - POLL_SECONDS=1
-      - DEBUGPY_ENABLED=TRUE
+      - DEBUGPY_ENABLED=FALSE
       - DEBUGPY_PORT=5678
       - DEBUGPY_WAIT_FOR_CLIENT=FALSE
     depends_on:
@@ -162,12 +165,13 @@ services:
     environment:
       - PYTHONUNBUFFERED=TRUE
       - PYTHONFILE=/app/order_executor/src/app.py
+      - PYTHONPATH=/app
       - EXECUTOR_ID=executor-2
       - ORDER_QUEUE_ADDR=order_queue:50060
       - EXECUTOR_PORT=50071
       - LEASE_SECONDS=2
       - POLL_SECONDS=1
-      - DEBUGPY_ENABLED=TRUE
+      - DEBUGPY_ENABLED=FALSE
       - DEBUGPY_PORT=5678
       - DEBUGPY_WAIT_FOR_CLIENT=FALSE
     depends_on:
@@ -175,3 +179,45 @@ services:
     volumes:
       - ./utils:/app/utils
       - ./order_executor/src:/app/order_executor/src
+
+  books_database_primary:
+    build:
+      context: ./
+      dockerfile: ./books_database/Dockerfile
+    ports:
+      - "50054:50054"
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/books_database/src/books_database.py
+      - PYTHONPATH=/app
+      - DB_ROLE=primary
+      - BACKUP_ADDRS=books_database_backup_1:50054,books_database_backup_2:50054
+    volumes:
+      - ./utils:/app/utils
+      - ./books_database/src:/app/books_database/src
+      
+  books_database_backup_1:
+    build:
+      context: ./
+      dockerfile: ./books_database/Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/books_database/src/app.py
+      - PYTHONPATH=/app
+      - DB_ROLE=backup
+    volumes:
+      - ./utils:/app/utils
+      - ./books_database/src:/app/books_database/src
+
+  books_database_backup_2:
+    build:
+      context: ./
+      dockerfile: ./books_database/Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/books_database/src/app.py
+      - PYTHONPATH=/app
+      - DB_ROLE=backup
+    volumes:
+      - ./utils:/app/utils
+      - ./books_database/src:/app/books_database/src

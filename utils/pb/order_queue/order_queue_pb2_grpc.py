@@ -3,9 +3,9 @@
 import grpc
 import warnings
 
-import order_queue_pb2 as order__queue__pb2
+from utils.pb.order_queue import order_queue_pb2 as utils_dot_pb_dot_order__queue_dot_order__queue__pb2
 
-GRPC_GENERATED_VERSION = '1.78.0'
+GRPC_GENERATED_VERSION = '1.70.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in order_queue_pb2_grpc.py depends on'
+        + f' but the generated code in utils/pb/order_queue/order_queue_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -36,18 +36,18 @@ class OrderQueueServiceStub(object):
         """
         self.Enqueue = channel.unary_unary(
                 '/order_queue.OrderQueueService/Enqueue',
-                request_serializer=order__queue__pb2.EnqueueRequest.SerializeToString,
-                response_deserializer=order__queue__pb2.EnqueueResponse.FromString,
+                request_serializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.EnqueueRequest.SerializeToString,
+                response_deserializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.EnqueueResponse.FromString,
                 _registered_method=True)
         self.TryAcquireLeadership = channel.unary_unary(
                 '/order_queue.OrderQueueService/TryAcquireLeadership',
-                request_serializer=order__queue__pb2.LeadershipRequest.SerializeToString,
-                response_deserializer=order__queue__pb2.LeadershipResponse.FromString,
+                request_serializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.LeadershipRequest.SerializeToString,
+                response_deserializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.LeadershipResponse.FromString,
                 _registered_method=True)
         self.Dequeue = channel.unary_unary(
                 '/order_queue.OrderQueueService/Dequeue',
-                request_serializer=order__queue__pb2.DequeueRequest.SerializeToString,
-                response_deserializer=order__queue__pb2.DequeueResponse.FromString,
+                request_serializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.DequeueRequest.SerializeToString,
+                response_deserializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.DequeueResponse.FromString,
                 _registered_method=True)
 
 
@@ -77,18 +77,18 @@ def add_OrderQueueServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'Enqueue': grpc.unary_unary_rpc_method_handler(
                     servicer.Enqueue,
-                    request_deserializer=order__queue__pb2.EnqueueRequest.FromString,
-                    response_serializer=order__queue__pb2.EnqueueResponse.SerializeToString,
+                    request_deserializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.EnqueueRequest.FromString,
+                    response_serializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.EnqueueResponse.SerializeToString,
             ),
             'TryAcquireLeadership': grpc.unary_unary_rpc_method_handler(
                     servicer.TryAcquireLeadership,
-                    request_deserializer=order__queue__pb2.LeadershipRequest.FromString,
-                    response_serializer=order__queue__pb2.LeadershipResponse.SerializeToString,
+                    request_deserializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.LeadershipRequest.FromString,
+                    response_serializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.LeadershipResponse.SerializeToString,
             ),
             'Dequeue': grpc.unary_unary_rpc_method_handler(
                     servicer.Dequeue,
-                    request_deserializer=order__queue__pb2.DequeueRequest.FromString,
-                    response_serializer=order__queue__pb2.DequeueResponse.SerializeToString,
+                    request_deserializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.DequeueRequest.FromString,
+                    response_serializer=utils_dot_pb_dot_order__queue_dot_order__queue__pb2.DequeueResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -116,8 +116,8 @@ class OrderQueueService(object):
             request,
             target,
             '/order_queue.OrderQueueService/Enqueue',
-            order__queue__pb2.EnqueueRequest.SerializeToString,
-            order__queue__pb2.EnqueueResponse.FromString,
+            utils_dot_pb_dot_order__queue_dot_order__queue__pb2.EnqueueRequest.SerializeToString,
+            utils_dot_pb_dot_order__queue_dot_order__queue__pb2.EnqueueResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -143,8 +143,8 @@ class OrderQueueService(object):
             request,
             target,
             '/order_queue.OrderQueueService/TryAcquireLeadership',
-            order__queue__pb2.LeadershipRequest.SerializeToString,
-            order__queue__pb2.LeadershipResponse.FromString,
+            utils_dot_pb_dot_order__queue_dot_order__queue__pb2.LeadershipRequest.SerializeToString,
+            utils_dot_pb_dot_order__queue_dot_order__queue__pb2.LeadershipResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -170,8 +170,8 @@ class OrderQueueService(object):
             request,
             target,
             '/order_queue.OrderQueueService/Dequeue',
-            order__queue__pb2.DequeueRequest.SerializeToString,
-            order__queue__pb2.DequeueResponse.FromString,
+            utils_dot_pb_dot_order__queue_dot_order__queue__pb2.DequeueRequest.SerializeToString,
+            utils_dot_pb_dot_order__queue_dot_order__queue__pb2.DequeueResponse.FromString,
             options,
             channel_credentials,
             insecure,

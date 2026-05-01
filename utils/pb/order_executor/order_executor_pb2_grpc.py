@@ -3,9 +3,9 @@
 import grpc
 import warnings
 
-import order_executor_pb2 as order__executor__pb2
+from utils.pb.order_executor import order_executor_pb2 as utils_dot_pb_dot_order__executor_dot_order__executor__pb2
 
-GRPC_GENERATED_VERSION = '1.78.0'
+GRPC_GENERATED_VERSION = '1.70.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in order_executor_pb2_grpc.py depends on'
+        + f' but the generated code in utils/pb/order_executor/order_executor_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -36,8 +36,8 @@ class OrderExecutorServiceStub(object):
         """
         self.Ping = channel.unary_unary(
                 '/order_executor.OrderExecutorService/Ping',
-                request_serializer=order__executor__pb2.PingRequest.SerializeToString,
-                response_deserializer=order__executor__pb2.PingResponse.FromString,
+                request_serializer=utils_dot_pb_dot_order__executor_dot_order__executor__pb2.PingRequest.SerializeToString,
+                response_deserializer=utils_dot_pb_dot_order__executor_dot_order__executor__pb2.PingResponse.FromString,
                 _registered_method=True)
 
 
@@ -55,8 +55,8 @@ def add_OrderExecutorServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'Ping': grpc.unary_unary_rpc_method_handler(
                     servicer.Ping,
-                    request_deserializer=order__executor__pb2.PingRequest.FromString,
-                    response_serializer=order__executor__pb2.PingResponse.SerializeToString,
+                    request_deserializer=utils_dot_pb_dot_order__executor_dot_order__executor__pb2.PingRequest.FromString,
+                    response_serializer=utils_dot_pb_dot_order__executor_dot_order__executor__pb2.PingResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -84,8 +84,8 @@ class OrderExecutorService(object):
             request,
             target,
             '/order_executor.OrderExecutorService/Ping',
-            order__executor__pb2.PingRequest.SerializeToString,
-            order__executor__pb2.PingResponse.FromString,
+            utils_dot_pb_dot_order__executor_dot_order__executor__pb2.PingRequest.SerializeToString,
+            utils_dot_pb_dot_order__executor_dot_order__executor__pb2.PingResponse.FromString,
             options,
             channel_credentials,
             insecure,
