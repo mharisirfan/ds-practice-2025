@@ -261,6 +261,74 @@ Our leader-election mechanism is lease-based and dynamically supports N executor
 - Our leader-election mechanism is lease-based and dynamically supports N executors (N > 2), not just two fixed replicas. Any executor instance with a unique executor_id can compete for leadership by calling TryAcquireLeadership; the order_queue grants leadership to only one active lease holder at a time, so mutual exclusion is preserved for dequeue operations. The system is resilient to failures because if the current leader crashes or stops renewing, its lease expires and another executor automatically becomes leader on the next polling cycle. This design is centralized, which makes coordination simple and deterministic, but also introduces trade-offs: the queue service is a potential single point of failure and bottleneck compared to decentralized approaches.
 
 
+### Books Database Service Overview
+
+The Books Database functions as a distributed, in-memory key-value store responsible for managing the inventory of items across the microservice ecosystem. To ensure fault tolerance and high availability under heavy system load, the data state is replicated across multiple independent instances. 
+
+The implementation relies on several core distributed systems patterns to maintain data integrity and consistency.
+
+**Primary-Backup Architecture**
+The database is structured around a single Primary node and multiple Backup nodes. All read and write requests initiated by the Order Execution layer are routed exclusively to the Primary instance. The Primary is responsible for managing the canonical state of the database and orchestrating the downstream propagation of any updates to the Backup replicas.
+
+**Synchronous Replication**
+To prevent data loss and ensure a unified state across the distributed system, a synchronous replication protocol is employed. When a write request modifies the inventory, the Primary first updates its internal local state and subsequently broadcasts the exact update to all connected Backup nodes. The Primary blocks the client transaction and waits for explicit acknowledgments from all active Backups before returning a successful response. This design actively trades lower latency and higher availability for strict sequential consistency, guaranteeing that an acknowledged order is never lost even if the Primary node experiences a catastrophic failure.
+
+**Optimistic Concurrency Control (Compare-And-Swap)**
+Given that multiple Order Executors operate in parallel, the system is highly susceptible to race conditions, such as "lost updates" where simultaneous transactions overwrite one another. To safely manage concurrent writes without relying on expensive, highly restrictive distributed locks, Optimistic Concurrency Control (OCC) is utilized via a Compare-And-Swap (CAS) mechanism. 
+
+When an executor submits a write request, it includes an `expected_stock` parameter—reflecting the state of the inventory at the exact moment it was read. Before applying the update, the Primary node evaluates whether the current local stock still matches this expected value. 
+*   **If the values match:** The transaction proceeds, and the update is replicated.
+*   **If the values differ:** It indicates that another concurrent process has already modified the inventory. The Primary safely rejects the write operation, prompting the initiating executor to back off, re-read the latest state, and retry the transaction.
+
+---
+
+### Consistency Protocol Diagram
+
+Below is the sequence diagram illustrating the complete network flow of the synchronous replication process, alongside the resolution of a concurrent transaction attempt.
+
+```mermaid
+sequenceDiagram
+    participant Exec1 as Order Executor 1
+    participant Primary as DB Primary
+    participant Backup1 as DB Backup 1
+    participant Backup2 as DB Backup 2
+    participant Exec2 as Order Executor 2
+
+    Note over Exec1, Backup2: Phase 1: Read Operation
+    Exec1->>Primary: ReadRequest(title="Book A")
+    Primary-->>Exec1: ReadResponse(stock=10)
+    
+    Note over Exec1: Inventory evaluated.<br/>new_stock = 9<br/>expected_stock = 10
+
+    Note over Exec1, Backup2: Phase 2: Synchronous Write & CAS Validation
+    Exec1->>Primary: WriteRequest("Book A", new_stock=9, expected_stock=10)
+    
+    Note over Primary: CAS Check:<br/>Current (10) == Expected (10) -> OK
+    Primary->>Primary: Update local state: "Book A" = 9
+    
+    par Synchronous Replication
+        Primary->>Backup1: WriteRequest("Book A", new_stock=9, is_replica_sync=True)
+        Primary->>Backup2: WriteRequest("Book A", new_stock=9, is_replica_sync=True)
+    end
+    
+    Note over Backup1, Backup2: Backups bypass CAS validation<br/>(is_replica_sync=True)
+    Backup1->>Backup1: Update local state: "Book A" = 9
+    Backup2->>Backup2: Update local state: "Book A" = 9
+    
+    par Replication Acknowledgment
+        Backup1-->>Primary: WriteResponse(Success=True)
+        Backup2-->>Primary: WriteResponse(Success=True)
+    end
+    
+    Primary-->>Exec1: WriteResponse(Success=True)
+    Note over Exec1: Transaction committed successfully
+
+    Note over Exec2, Primary: Phase 3: Concurrent Write Handling (Contention)
+    Exec2->>Primary: WriteRequest("Book A", new_stock=9, expected_stock=10)
+    Note over Primary: CAS Check:<br/>Current (9) != Expected (10) -> FAILED
+    Primary-->>Exec2: WriteResponse(Success=False)
+    Note over Exec2: Transaction aborted.<br/>Client initiates backoff and retry loop.
+```
 
 
 
