@@ -144,7 +144,10 @@ services:
       - PYTHONPATH=/app
       - EXECUTOR_ID=executor-1
       - ORDER_QUEUE_ADDR=order_queue:50060
+      - DB_PRIMARY_ADDR=books_database_primary:50054
+      - PAYMENT_ADDR=payment_system:50055
       - EXECUTOR_PORT=50070
+      - EXECUTOR_COMMIT_DELAY=${EXECUTOR_COMMIT_DELAY:-0}
       - LEASE_SECONDS=2
       - POLL_SECONDS=1
       - DEBUGPY_ENABLED=FALSE
@@ -152,6 +155,8 @@ services:
       - DEBUGPY_WAIT_FOR_CLIENT=FALSE
     depends_on:
       - order_queue
+      - books_database_primary
+      - payment_system
     volumes:
       - ./utils:/app/utils
       - ./order_executor/src:/app/order_executor/src
@@ -168,7 +173,10 @@ services:
       - PYTHONPATH=/app
       - EXECUTOR_ID=executor-2
       - ORDER_QUEUE_ADDR=order_queue:50060
+      - DB_PRIMARY_ADDR=books_database_primary:50054
+      - PAYMENT_ADDR=payment_system:50055
       - EXECUTOR_PORT=50071
+      - EXECUTOR_COMMIT_DELAY=${EXECUTOR_COMMIT_DELAY:-0}
       - LEASE_SECONDS=2
       - POLL_SECONDS=1
       - DEBUGPY_ENABLED=FALSE
@@ -176,6 +184,8 @@ services:
       - DEBUGPY_WAIT_FOR_CLIENT=FALSE
     depends_on:
       - order_queue
+      - books_database_primary
+      - payment_system
     volumes:
       - ./utils:/app/utils
       - ./order_executor/src:/app/order_executor/src
@@ -188,14 +198,17 @@ services:
       - "50054:50054"
     environment:
       - PYTHONUNBUFFERED=TRUE
-      - PYTHONFILE=/app/books_database/src/books_database.py
+      - PYTHONFILE=/app/books_database/src/app.py
       - PYTHONPATH=/app
       - DB_ROLE=primary
       - BACKUP_ADDRS=books_database_backup_1:50054,books_database_backup_2:50054
+    depends_on:
+      - books_database_backup_1
+      - books_database_backup_2
     volumes:
       - ./utils:/app/utils
       - ./books_database/src:/app/books_database/src
-      
+
   books_database_backup_1:
     build:
       context: ./
@@ -221,3 +234,21 @@ services:
     volumes:
       - ./utils:/app/utils
       - ./books_database/src:/app/books_database/src
+
+  payment_system:
+    build:
+      context: ./
+      dockerfile: ./payment_system/Dockerfile
+    ports:
+      - ${PAYMENT_DEBUG_PORT:-5687}:5678
+    environment:
+      - PYTHONUNBUFFERED=TRUE
+      - PYTHONFILE=/app/payment_system/src/app.py
+      - PYTHONPATH=/app
+      - PAYMENT_PORT=50055
+      - DEBUGPY_ENABLED=FALSE
+      - DEBUGPY_PORT=5678
+      - DEBUGPY_WAIT_FOR_CLIENT=FALSE
+    volumes:
+      - ./utils:/app/utils
+      - ./payment_system/src:/app/payment_system/src

@@ -5,7 +5,7 @@ import warnings
 
 from utils.pb.books_database import books_database_pb2 as utils_dot_pb_dot_books__database_dot_books__database__pb2
 
-GRPC_GENERATED_VERSION = '1.70.0'
+GRPC_GENERATED_VERSION = '1.78.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in utils/pb/books_database/books_database_pb2_grpc.py depends on'
+        + ' but the generated code in utils/pb/books_database/books_database_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -44,6 +44,21 @@ class BooksDatabaseStub(object):
                 request_serializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.WriteRequest.SerializeToString,
                 response_deserializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.WriteResponse.FromString,
                 _registered_method=True)
+        self.Prepare = channel.unary_unary(
+                '/books.BooksDatabase/Prepare',
+                request_serializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.PrepareRequest.SerializeToString,
+                response_deserializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.PrepareResponse.FromString,
+                _registered_method=True)
+        self.Commit = channel.unary_unary(
+                '/books.BooksDatabase/Commit',
+                request_serializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.CommitRequest.SerializeToString,
+                response_deserializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.CommitResponse.FromString,
+                _registered_method=True)
+        self.Abort = channel.unary_unary(
+                '/books.BooksDatabase/Abort',
+                request_serializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.AbortRequest.SerializeToString,
+                response_deserializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.AbortResponse.FromString,
+                _registered_method=True)
 
 
 class BooksDatabaseServicer(object):
@@ -61,6 +76,24 @@ class BooksDatabaseServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Prepare(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Commit(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Abort(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_BooksDatabaseServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -73,6 +106,21 @@ def add_BooksDatabaseServicer_to_server(servicer, server):
                     servicer.Write,
                     request_deserializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.WriteRequest.FromString,
                     response_serializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.WriteResponse.SerializeToString,
+            ),
+            'Prepare': grpc.unary_unary_rpc_method_handler(
+                    servicer.Prepare,
+                    request_deserializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.PrepareRequest.FromString,
+                    response_serializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.PrepareResponse.SerializeToString,
+            ),
+            'Commit': grpc.unary_unary_rpc_method_handler(
+                    servicer.Commit,
+                    request_deserializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.CommitRequest.FromString,
+                    response_serializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.CommitResponse.SerializeToString,
+            ),
+            'Abort': grpc.unary_unary_rpc_method_handler(
+                    servicer.Abort,
+                    request_deserializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.AbortRequest.FromString,
+                    response_serializer=utils_dot_pb_dot_books__database_dot_books__database__pb2.AbortResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -129,6 +177,87 @@ class BooksDatabase(object):
             '/books.BooksDatabase/Write',
             utils_dot_pb_dot_books__database_dot_books__database__pb2.WriteRequest.SerializeToString,
             utils_dot_pb_dot_books__database_dot_books__database__pb2.WriteResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Prepare(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/books.BooksDatabase/Prepare',
+            utils_dot_pb_dot_books__database_dot_books__database__pb2.PrepareRequest.SerializeToString,
+            utils_dot_pb_dot_books__database_dot_books__database__pb2.PrepareResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Commit(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/books.BooksDatabase/Commit',
+            utils_dot_pb_dot_books__database_dot_books__database__pb2.CommitRequest.SerializeToString,
+            utils_dot_pb_dot_books__database_dot_books__database__pb2.CommitResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Abort(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/books.BooksDatabase/Abort',
+            utils_dot_pb_dot_books__database_dot_books__database__pb2.AbortRequest.SerializeToString,
+            utils_dot_pb_dot_books__database_dot_books__database__pb2.AbortResponse.FromString,
             options,
             channel_credentials,
             insecure,

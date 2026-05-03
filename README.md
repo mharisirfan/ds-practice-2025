@@ -283,6 +283,14 @@ This will start the system with the multiple services. Each service will be rest
 
 The checkpoint evaluations will be done using the code that is started with Docker Compose, so make sure that your code works with Docker Compose.
 
+### Two-Phase Commit for Order Execution
+
+The order executor acts as the coordinator for a Two-Phase Commit (2PC) protocol. The participants are the books database and the dummy payment service. During Phase 1, the executor sends `Prepare` to both services. The database reserves the required stock for the order without changing committed stock, and the payment service records a prepared dummy payment. If every participant replies ready, Phase 2 sends `Commit`; otherwise the executor sends `Abort`.
+
+The database applies stock updates only after `Commit`, and the payment service executes the dummy payment only after `Commit`. The payment service keeps transaction state in `/tmp/payment_transactions.json`, making repeated `Commit` or `Abort` calls idempotent across simple service restarts. The executor also retries commit decisions to reduce the blocking window if a participant is temporarily unavailable.
+
+2PC uses two phases and, for two participants, normally needs two prepare requests plus two final decision requests. Its main trade-off is blocking: once participants vote ready, they must wait for the coordinator's final decision. This gives atomic order execution across stock and payment, but availability can suffer if the coordinator or a participant fails during the commit phase.
+
 If, for some reason, changes to the code are not reflected, try to force rebuilding the Docker images with the following command:
 
 ```bash

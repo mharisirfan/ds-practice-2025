@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import json
 import grpc
 import logging
 import threading
@@ -26,6 +27,11 @@ sys.path.insert(0, books_database_grpc_path)
 import books_database_pb2 as db_pb
 import books_database_pb2_grpc as db_grpc
 
+payment_grpc_path = os.path.abspath(os.path.join(FILE, "../../../utils/pb/payment"))
+sys.path.insert(0, payment_grpc_path)
+import payment_pb2 as pay_pb
+import payment_pb2_grpc as pay_grpc
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -33,9 +39,13 @@ EXECUTOR_ID = os.getenv("EXECUTOR_ID", "executor-1")
 QUEUE_ADDR = os.getenv("ORDER_QUEUE_ADDR", "order_queue:50060")
 # NEW: Address for the primary database replica
 DB_PRIMARY_ADDR = os.getenv("DB_PRIMARY_ADDR", "books_database_primary:50054") 
+PAYMENT_ADDR = os.getenv("PAYMENT_ADDR", "payment_system:50055")
 LEASE_SECONDS = int(os.getenv("LEASE_SECONDS", "2"))
 POLL_SECONDS = float(os.getenv("POLL_SECONDS", "1.0"))
 GRPC_PORT = int(os.getenv("EXECUTOR_PORT", "50070"))
+RPC_TIMEOUT_SECONDS = float(os.getenv("RPC_TIMEOUT_SECONDS", "2.0"))
+DECISION_LOG_FILE = os.getenv("EXECUTOR_DECISION_LOG", "/tmp/executor_decisions.json")
+COMMIT_DELAY_SECONDS = float(os.getenv("EXECUTOR_COMMIT_DELAY", "0"))
 
 
 class SharedState:
@@ -60,6 +70,57 @@ class SharedState:
 
 
 STATE = SharedState()
+
+
+class DecisionLog:
+    def __init__(self, path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.decisions = self._load()
+
+    def _load(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+                return data if isinstance(data, dict) else {}
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def _save(self):
+        tmp_path = f"{self.path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(self.decisions, handle)
+        os.replace(tmp_path, self.path)
+
+    def record(self, order_id, decision, completed=False):
+        with self.lock:
+            self.decisions[order_id] = {
+                "decision": decision,
+                "completed": completed,
+                "updated_at": time.time(),
+            }
+            self._save()
+
+    def mark_completed(self, order_id):
+        with self.lock:
+            current = self.decisions.get(order_id)
+            if not current:
+                return
+            current["completed"] = True
+            current["updated_at"] = time.time()
+            self.decisions[order_id] = current
+            self._save()
+
+    def pending_commits(self):
+        with self.lock:
+            return [
+                order_id
+                for order_id, entry in self.decisions.items()
+                if entry.get("decision") == "commit" and not entry.get("completed")
+            ]
+
+
+DECISION_LOG = DecisionLog(DECISION_LOG_FILE)
 
 
 class OrderExecutorService(ex_grpc.OrderExecutorServiceServicer):
@@ -116,11 +177,106 @@ def execute_order_item_with_retry(db_stub, title, quantity=1, max_retries=3):
     return False
 
 
+def abort_prepared_participants(order_id, db_stub, payment_stub):
+    """Best-effort abort for participants that may have prepared transaction state."""
+    try:
+        db_stub.Abort(db_pb.AbortRequest(order_id=order_id), timeout=RPC_TIMEOUT_SECONDS)
+    except grpc.RpcError as exc:
+        logger.error("Database abort failed | order_id=%s | error=%s", order_id, exc.details())
+
+    try:
+        payment_stub.Abort(pay_pb.AbortRequest(order_id=order_id), timeout=RPC_TIMEOUT_SECONDS)
+    except grpc.RpcError as exc:
+        logger.error("Payment abort failed | order_id=%s | error=%s", order_id, exc.details())
+
+
+def commit_participants_with_retry(order_id, db_stub, payment_stub, max_retries=5):
+    """Commit prepared participants; retries reduce the blocking window after a commit decision."""
+    participants = {
+        "database": lambda: db_stub.Commit(db_pb.CommitRequest(order_id=order_id), timeout=RPC_TIMEOUT_SECONDS).success,
+        "payment": lambda: payment_stub.Commit(pay_pb.CommitRequest(order_id=order_id), timeout=RPC_TIMEOUT_SECONDS).success,
+    }
+    committed = set()
+
+    for attempt in range(1, max_retries + 1):
+        for name, commit_call in participants.items():
+            if name in committed:
+                continue
+            try:
+                if commit_call():
+                    committed.add(name)
+                    logger.info("2PC commit ack | order_id=%s | participant=%s", order_id, name)
+                else:
+                    logger.warning("2PC commit rejected | order_id=%s | participant=%s", order_id, name)
+            except grpc.RpcError as exc:
+                logger.error("2PC commit RPC failed | order_id=%s | participant=%s | error=%s", order_id, name, exc)
+
+        if len(committed) == len(participants):
+            return True
+
+        time.sleep(min(0.25 * attempt, 1.0))
+
+    missing = sorted(set(participants) - committed)
+    logger.error("2PC commit incomplete | order_id=%s | missing=%s", order_id, missing)
+    return False
+
+
+def execute_order_with_2pc(order, db_stub, payment_stub):
+    """Coordinate a two-phase commit between the books database and payment service."""
+    order_id = order.order_id
+    items = list(order.items)
+    amount = len(items)
+
+    try:
+        db_prepare = db_stub.Prepare(
+            db_pb.PrepareRequest(order_id=order_id, items=items),
+            timeout=RPC_TIMEOUT_SECONDS,
+        )
+        if not db_prepare.ready:
+            logger.warning("2PC database prepare rejected | order_id=%s | message=%s", order_id, db_prepare.message)
+            DECISION_LOG.record(order_id, "abort", completed=True)
+            abort_prepared_participants(order_id, db_stub, payment_stub)
+            return False
+
+        payment_prepare = payment_stub.Prepare(
+            pay_pb.PrepareRequest(order_id=order_id, amount=amount),
+            timeout=RPC_TIMEOUT_SECONDS,
+        )
+        if not payment_prepare.ready:
+            logger.warning("2PC payment prepare rejected | order_id=%s | message=%s", order_id, payment_prepare.message)
+            DECISION_LOG.record(order_id, "abort", completed=True)
+            abort_prepared_participants(order_id, db_stub, payment_stub)
+            return False
+
+    except grpc.RpcError as exc:
+        logger.error("2PC prepare RPC failed | order_id=%s | error=%s", order_id, exc)
+        DECISION_LOG.record(order_id, "abort", completed=True)
+        abort_prepared_participants(order_id, db_stub, payment_stub)
+        return False
+
+    DECISION_LOG.record(order_id, "commit", completed=False)
+    if COMMIT_DELAY_SECONDS > 0:
+        logger.info("2PC commit delay | order_id=%s | delay=%.2fs", order_id, COMMIT_DELAY_SECONDS)
+        time.sleep(COMMIT_DELAY_SECONDS)
+    committed = commit_participants_with_retry(order_id, db_stub, payment_stub)
+    if committed:
+        DECISION_LOG.mark_completed(order_id)
+        logger.info("2PC committed | order_id=%s | participants=database,payment", order_id)
+    return committed
+
+
 def executor_loop():
     """Continuously compete for leadership, dequeue, and execute at most one order at a time."""
     # We maintain a single channel to the DB Primary to reuse connection state
     db_channel = grpc.insecure_channel(DB_PRIMARY_ADDR)
     db_stub = db_grpc.BooksDatabaseStub(db_channel)
+    payment_channel = grpc.insecure_channel(PAYMENT_ADDR)
+    payment_stub = pay_grpc.PaymentServiceStub(payment_channel)
+
+    for order_id in DECISION_LOG.pending_commits():
+        logger.warning("Recovering pending commit | order_id=%s", order_id)
+        if commit_participants_with_retry(order_id, db_stub, payment_stub):
+            DECISION_LOG.mark_completed(order_id)
 
     while True:
         try:
@@ -162,18 +318,10 @@ def executor_loop():
                     EXECUTOR_ID, order.order_id, len(order.items)
                 )
                 
-                all_items_successful = True
-                for item_title in order.items:
-                    # Assuming each item in the list represents 1 quantity of that book
-                    success = execute_order_item_with_retry(db_stub, title=item_title, quantity=1)
-                    if not success:
-                        all_items_successful = False
-                        # In a real system, you might trigger a rollback or compensation transaction here
-                        logger.error("Order %s failed on item '%s'.", order.order_id, item_title)
-                        break 
-                
-                if all_items_successful:
-                    logger.info("Order %s fully executed and stock updated.", order.order_id)
+                if execute_order_with_2pc(order, db_stub, payment_stub):
+                    logger.info("Order %s fully executed: stock updated and payment committed.", order.order_id)
+                else:
+                    logger.error("Order %s failed during two-phase commit.", order.order_id)
 
         except Exception as exc:
             STATE.update("", False, "error")
