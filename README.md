@@ -133,12 +133,17 @@ flowchart TD
 
 | Service | Port | Protocol | Description |
 |---------|------|----------|-------------|
-| **Fraud Detection** | 50051 | gRPC | Analyzes user data and credit card information to determine if a transaction is fraudulent using rule-based detection |
-| **Transaction Verification** | 50052 | gRPC | Validates that user data is all filled in and credit card information is in the correct format |
-| **Suggestions** | 50053 | gRPC | Randomly picks books from a book list to recommend to customers after successful checkout |
-| **Order** | 50060 | gRPC | Handles order lifecycle, coordinates validation steps, and manages overall checkout flow |
-| **Executor 1** | 50070 | gRPC | Executes tasks concurrently, dispatches service calls, and processes responses |
-| **Executor 2** | 50071 | gRPC | Backup/parallel executor instance for load distribution and fault tolerance |
+| **Frontend Server** | 8082 | REST API | Web UI server that serves the shopping interface and handles checkout requests from users |
+| **Order Orchestrator** | 5000 | REST API + gRPC | Orchestrates the entire order workflow: initializes microservices, coordinates event propagation with vector clocks, makes approval decisions, and triggers cleanup |
+| **Transaction Verification** | 50052 | gRPC | Validates user data completeness and credit card format. Runs parallel branches via local dispatch, coordinates with Fraud Detection using vector clocks to enforce causal ordering of events (a, b, c) |
+| **Fraud Detection** | 50051 | gRPC | Analyzes user data and credit card patterns for fraud indicators using rule-based detection. Depends on Transaction Verification events via vector clock validation. Calls Suggestions service to generate recommendations (event f) |
+| **Suggestions** | 50053 | gRPC | Generates personalized book recommendations for approved orders. Receives event triggers via vector clock from Fraud Detection and merges clock state for causal consistency |
+| **Order Queue Service** | 50060 | gRPC | Manages approved order queue and implements leader election. Executors compete for lease to become leader. Provides TryAcquireLeadership and Dequeue operations with gRPC-based coordination |
+| **Order Executor 1** | 50070 | gRPC | Active leader executor: dequeues orders, acts as 2PC coordinator with Database and Payment System, manages decision log for recovery, executes committed transactions |
+| **Order Executor 2** | 50071 | gRPC | Standby executor: competes for leadership lease, monitors queue, takes over if leader fails, maintains shared decision log for crash recovery |
+| **Books Database Primary** | 50054 | gRPC | Primary database replica: stores book inventory and processes stock updates. Participates in 2PC protocol (Prepare/Commit/Abort). Coordinates with backup replicas for consistency |
+| **Payment System** | 50055 | gRPC | Handles payment processing and state management. Participates in 2PC protocol, maintains prepared transaction state with TTL-based recovery, commits or aborts payments atomically |
+
 
 ## Vector Clocks Diagram
 ```mermaid
