@@ -343,7 +343,7 @@ sequenceDiagram
 ---------------------------------------------------------------------------------
 
 
-## System Workflow Seminar 11 full
+## Distributed Commitment Protocol diagram
 ```mermaid
 sequenceDiagram
     autonumber
@@ -353,40 +353,98 @@ sequenceDiagram
     participant FD as FraudDetection
     participant SUG as Suggestions
     participant OQ as OrderQueue
-    participant EX as OrderExecutor (2PC Coordinator)
+    participant EX as OrderExecutor<br/>2PC Coordinator
     participant DB as BooksDatabase
     participant PAY as PaymentSystem
 
     UI->>ORC: POST /checkout (order payload)
-    ORC->>TV: InitOrder + VC
-    ORC->>FD: InitOrder + VC
-    ORC->>SUG: InitOrder + VC
-
-    ORC->>TV: StartVerificationFlow + VC
-    TV->>TV: VerifyItems
-    TV->>TV: VerifyCardFormat
-    TV->>TV: VerifyUserData
-    TV->>FD: CheckUserFraud
-    TV->>FD: CheckCardFraud
-    FD->>SUG: GenerateSuggestions
-    SUG-->>FD: Suggestions + VC
-    FD-->>TV: ok + VC + metadata(suggestions)
-    TV-->>ORC: ok + VC + metadata(suggestions)
-
-    alt Order Approved
-        ORC->>OQ: Enqueue(order)
-        EX->>OQ: Dequeue(order)
-        EX->>DB: Prepare(order)
-        EX->>PAY: Prepare(order)
-        EX->>DB: Commit(order)
-        EX->>PAY: Commit(order)
-    else Order Rejected
-        ORC-->>UI: status=Rejected
+    
+    rect rgb(200, 220, 255)
+    Note over ORC,SUG: Phase 1: Initialization & VC Setup
+    ORC->>TV: InitOrder + VC={orchestrator:1}
+    ORC->>FD: InitOrder + VC={orchestrator:1}
+    ORC->>SUG: InitOrder + VC={orchestrator:1}
     end
 
-    ORC->>TV: ClearOrder(VCf)
+    rect rgb(200, 220, 255)
+    Note over ORC,SUG: Phase 2: Causal Event Flow with Vector Clocks
+    ORC->>TV: StartVerificationFlow + VC={orchestrator:2}
+    
+    Note over TV: Local parallel branches:<br/>a_verify_items → c_verify_card<br/>b_verify_user_data<br/>Join → event ordering via VC
+    
+    TV->>FD: CheckUserFraud (event d) + VC
+    FD-->>TV: ok + VC (with dependency checks)
+    
+    TV->>FD: CheckCardFraud (event e) + VC
+    FD->>SUG: GenerateSuggestions (event f) + VC
+    SUG-->>FD: ok + VC + books
+    FD-->>TV: ok + VC + metadata(suggestions)
+    
+    TV-->>ORC: ok + VC + metadata(suggestions)
+    end
+
+    rect rgb(200, 220, 255)
+    Note over ORC,OQ: Phase 3: Decision & Enqueue
+    alt Order Approved (all events passed VC validation)
+        ORC->>OQ: Enqueue(order, VCf)
+    else Causal Violation OR Business Logic Reject
+        ORC->>TV: ClearOrder(VCf) - validate VC
+        ORC->>FD: ClearOrder(VCf) - validate VC
+        ORC->>SUG: ClearOrder(VCf) - validate VC
+        ORC-->>UI: status=Rejected + reason
+        Note over ORC: Order cleanup complete
+    end
+    end
+
+    rect rgb(255, 220, 200)
+    Note over EX,PAY: Phase 4: 2-Phase Commit (Atomicity)
+    EX->>OQ: Dequeue(order)
+    
+    Note over EX: Decision Log: RECEIVED
+    
+    par 2PC Phase 1: Prepare (Voting)
+        EX->>DB: Prepare(order_id, items, qty)
+        DB-->>EX: ready=true (stock reserved)
+        EX->>PAY: Prepare(order_id, amount)
+        PAY-->>EX: ready=true (payment prepared)
+    end
+    
+    Note over EX: Decision Log: PREPARED
+    
+    alt All participants ready
+        par 2PC Phase 2: Commit (Execute)
+            EX->>DB: Commit(order_id)
+            DB-->>EX: committed (stock updated)
+            EX->>PAY: Commit(order_id)
+            PAY-->>EX: committed (payment executed)
+        end
+        Note over EX: Decision Log: COMMITTED
+    else Timeout OR Prepare Failed
+        par 2PC Phase 2: Abort (Rollback)
+            EX->>DB: Abort(order_id)
+            DB-->>EX: aborted (stock released)
+            EX->>PAY: Abort(order_id)
+            PAY-->>EX: aborted (payment cancelled)
+        end
+        Note over EX: Decision Log: ABORTED
+    end
+    end
+
+    rect rgb(200, 255, 200)
+    Note over ORC,SUG: Phase 5: Cleanup & Causal Consistency Validation
+    ORC->>TV: ClearOrder(VCf) - only if local_VC ≤ VCf
+    TV-->>ORC: success (state cleared)
+    
     ORC->>FD: ClearOrder(VCf)
+    FD-->>ORC: success (state cleared)
+    
     ORC->>SUG: ClearOrder(VCf)
+    SUG-->>ORC: success (state cleared)
+    
+    Note over ORC: All services acknowledge causal consistency
+    end
+
+    ORC-->>UI: status=Success + suggestions
 
 ```
 
