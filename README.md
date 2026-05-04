@@ -313,3 +313,50 @@ frontend service:
 - It's a simple static HTML page, you can open `frontend/src/index.html` in your browser.
 
 And then run each service individually.
+
+### System Workflow
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as Frontend
+    participant ORC as Orchestrator
+    participant TV as TransactionVerification
+    participant FD as FraudDetection
+    participant SUG as Suggestions
+    participant OQ as OrderQueue
+    participant EX as OrderExecutor (2PC Coordinator)
+    participant DB as BooksDatabase
+    participant PAY as PaymentSystem
+
+    UI->>ORC: POST /checkout (order payload)
+    ORC->>TV: InitOrder + VC
+    ORC->>FD: InitOrder + VC
+    ORC->>SUG: InitOrder + VC
+
+    ORC->>TV: StartVerificationFlow + VC
+    TV->>TV: VerifyItems
+    TV->>TV: VerifyCardFormat
+    TV->>TV: VerifyUserData
+    TV->>FD: CheckUserFraud
+    TV->>FD: CheckCardFraud
+    FD->>SUG: GenerateSuggestions
+    SUG-->>FD: Suggestions + VC
+    FD-->>TV: ok + VC + metadata(suggestions)
+    TV-->>ORC: ok + VC + metadata(suggestions)
+
+    alt Order Approved
+        ORC->>OQ: Enqueue(order)
+        EX->>OQ: Dequeue(order)
+        EX->>DB: Prepare(order)
+        EX->>PAY: Prepare(order)
+        EX->>DB: Commit(order)
+        EX->>PAY: Commit(order)
+    else Order Rejected
+        ORC-->>UI: status=Rejected
+    end
+
+    ORC->>TV: ClearOrder(VCf)
+    ORC->>FD: ClearOrder(VCf)
+    ORC->>SUG: ClearOrder(VCf)
+
+```
