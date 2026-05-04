@@ -14,23 +14,34 @@ graph TD
     end 
 
     subgraph "Orchestration Layer"
-        B -->|POST<br/>checkout| C[Order Orchestrator<br/>Port: 5000]
+        B -->|POST checkout| C[Order Orchestrator<br/>Port: 5000]
     end    
 
-    subgraph "Microservices Layer"
-        C -->|gRPC| D[Fraud Detection<br/>Port: 50051]
-        C -->|gRPC| E[Transaction Verification<br/>Port: 50052]
-        C -->|gRPC| F[Suggestions<br/>Port: 50053]
+    subgraph "Microservices Layer<br/>(Vector Clock Coordination)"
+        C -->|gRPC: InitOrder + VC| D[Fraud Detection<br/>Port: 50051]
+        C -->|gRPC: InitOrder + VC| E[Transaction Verification<br/>Port: 50052]
+        C -->|gRPC: InitOrder + VC| F[Suggestions<br/>Port: 50053]
+        
+        E <-->|gRPC: VC propagation<br/>events d, e| D
+        D <-->|gRPC: VC propagation<br/>event f| F
+        E <-->|gRPC: VC propagation<br/>event c, d| D
     end
 
-    subgraph "Execution Layer"
-        C -->|gRPC: Enqueue| G[Order Queue Service<br/>Port: 50060]
+    subgraph "Execution Layer<br/>(2PC & Leader Election)"
+        C -->|gRPC: enqueue_approved_order| G[Order Queue Service<br/>Port: 50060]
         
-        G <-->|gRPC: TryAcquireLeadership & Dequeue| H1[Order Executor 1<br/>Port: 50070]
-        G <-->|gRPC: TryAcquireLeadership & Dequeue| H2[Order Executor 2<br/>Port: 50071]
+        G <-->|gRPC: TryAcquireLeadership<br/>& Dequeue| H1[Order Executor 1<br/>Port: 50070<br/>Leader]
+        G <-->|gRPC: TryAcquireLeadership<br/>& Dequeue| H2[Order Executor 2<br/>Port: 50071<br/>Standby]
         
-        %% Represents the lease-based leader state held in the queue
         H1 -.->|Competes for Lease| H2
+    end
+
+    subgraph "Persistence Layer<br/>(2PC Participants)"
+        H1 <-->|gRPC: 2PC<br/>Prepare/Commit| I[Books Database Primary<br/>+ Backups<br/>Port: 50054]
+        H1 <-->|gRPC: 2PC<br/>Prepare/Commit| J[Payment System<br/>Port: 50055]
+        
+        H2 <-->|gRPC: 2PC<br/>Prepare/Commit| I
+        H2 <-->|gRPC: 2PC<br/>Prepare/Commit| J
     end
 ```
 The architecture follows a layered approach with clear separation of concerns. The frontend communicates with the orchestrator via REST, which then coordinates three gRPC services concurrently.
