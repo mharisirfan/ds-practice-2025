@@ -390,6 +390,8 @@ sequenceDiagram
 
 ### Seminar 11 2PC
 ```mermaid
+
+
 sequenceDiagram
     participant C as Client (Frontend/Orchestrator)
     participant Q as Order Queue
@@ -418,6 +420,4 @@ sequenceDiagram
         P-->>E: success
         E-->>C: Order committed
     end
-
-
 ```
