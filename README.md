@@ -388,3 +388,36 @@ sequenceDiagram
     end
 ```
 
+### Seminar 11 2PC
+```mermaid
+sequenceDiagram
+    participant C as Client (Frontend/Orchestrator)
+    participant Q as Order Queue
+    participant E as Order Executor (Coordinator)
+    participant DB as Books DB Primary (Participant A)
+    participant P as Payment Service (Participant B)
+
+    C->>Q: Enqueue approved order
+    Q-->>E: Dequeue order
+
+    Note over E,DB,P: Phase 1 - Prepare
+    E->>DB: Prepare(order_id, items)
+    DB-->>E: ready / reject
+    E->>P: Prepare(order_id, amount)
+    P-->>E: ready / reject
+
+    alt Any reject
+        E->>DB: Abort(order_id)
+        E->>P: Abort(order_id)
+        E-->>C: Order failed
+    else All ready
+        Note over E,DB,P: Phase 2 - Commit
+        E->>DB: Commit(order_id)
+        DB-->>E: success
+        E->>P: Commit(order_id)
+        P-->>E: success
+        E-->>C: Order committed
+    end
+
+
+```
