@@ -221,11 +221,17 @@ def commit_participants_with_retry(order_id, db_stub, payment_stub, max_retries=
     return False
 
 
-def execute_order_with_2pc(order, db_stub, payment_stub):
-    """Coordinate a two-phase commit between the books database and payment service."""
+def execute_order_with_2pc(order, db_stub, payment_stub, incoming_vc=None):
+    """Coordinate a two-phase commit between the books database and payment service.
+    Propagates vector clock for causal tracking."""
     order_id = order.order_id
     items = list(order.items)
     amount = len(items)
+    
+    # Tick executor component of vector clock
+    vc = dict(incoming_vc) if incoming_vc else {}
+    vc["order_executor"] = vc.get("order_executor", 0) + 1
+    logger.info("Executing order | order_id=%s | VC=%s", order_id, vc)
 
     try:
         db_prepare = db_stub.Prepare(
@@ -296,7 +302,6 @@ def executor_loop():
                     continue
 
                 STATE.update(EXECUTOR_ID, True, "leader")
-                logger.info("Leader active | executor=%s", EXECUTOR_ID)
 
                 dequeue = queue_stub.Dequeue(
                     q_pb.DequeueRequest(executor_id=EXECUTOR_ID, vector_clock=q_pb.VectorClock())
@@ -308,17 +313,16 @@ def executor_loop():
                     continue
 
                 if not dequeue.has_order:
-                    logger.info("Leader idle | queue empty")
                     time.sleep(POLL_SECONDS)
                     continue
 
                 order = dequeue.order
                 logger.info(
-                    "Executing order... | executor=%s | order_id=%s | items=%d",
-                    EXECUTOR_ID, order.order_id, len(order.items)
+                    "Executing order... | executor=%s | order_id=%s | items=%d | VC=%s",
+                    EXECUTOR_ID, order.order_id, len(order.items), dict(order.vector_clock.clock)
                 )
                 
-                if execute_order_with_2pc(order, db_stub, payment_stub):
+                if execute_order_with_2pc(order, db_stub, payment_stub, dict(order.vector_clock.clock)):
                     logger.info("Order %s fully executed: stock updated and payment committed.", order.order_id)
                 else:
                     logger.error("Order %s failed during two-phase commit.", order.order_id)

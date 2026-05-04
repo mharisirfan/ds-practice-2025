@@ -28,6 +28,13 @@ class OrderQueueService(pb_grpc.OrderQueueServiceServicer):
     def _lease_valid(self):
         """Check whether the current leadership lease is still active."""
         return self._leader_id and time.time() < self._leader_expiry
+    
+    @staticmethod
+    def _vc_compare_key(entry):
+        """Return sortable key for vector clock (lexicographic order)."""
+        vc = entry.get("vector_clock", {})
+        # Convert to sorted tuple for consistent ordering
+        return tuple(sorted((k, v) for k, v in vc.items()))
 
     def Enqueue(self, request, context):
         """Insert a verified order into the queue for executor processing."""
@@ -52,25 +59,25 @@ class OrderQueueService(pb_grpc.OrderQueueServiceServicer):
         lease_seconds = max(1, int(request.lease_seconds) if request.lease_seconds else 2)
 
         with self._lock:
+            was_leader = self._leader_id == request.executor_id
             if not self._lease_valid() or self._leader_id == request.executor_id:
                 self._leader_id = request.executor_id
                 self._leader_expiry = now + lease_seconds
                 granted = True
                 message = "Leadership granted"
+                log_leadership_change = not was_leader  # Log only if newly granted
             else:
                 granted = False
                 message = f"Leadership held by {self._leader_id}"
+                log_leadership_change = False
 
             expiry_ms = int(self._leader_expiry * 1000)
             leader_id = self._leader_id
 
-        logger.info(
-            "Leadership request | executor=%s | granted=%s | leader=%s | expiry_ms=%d",
-            request.executor_id,
-            granted,
-            leader_id,
-            expiry_ms,
-        )
+        # Only log significant leadership changes, not every renewal
+        if log_leadership_change:
+            logger.info("Leadership granted | executor=%s | leader=%s", request.executor_id, leader_id)
+        
         return pb.LeadershipResponse(
             granted=granted,
             leader_id=leader_id,
@@ -79,7 +86,8 @@ class OrderQueueService(pb_grpc.OrderQueueServiceServicer):
         )
 
     def Dequeue(self, request, context):
-        """Allow dequeue only to the active leader, enforcing mutual exclusion."""
+        """Allow dequeue only to the active leader, enforcing mutual exclusion.
+        Returns order with smallest vector clock (causal ordering)."""
         with self._lock:
             if not self._lease_valid() or self._leader_id != request.executor_id:
                 return pb.DequeueResponse(success=False, has_order=False, message="Requester is not active leader")
@@ -87,13 +95,17 @@ class OrderQueueService(pb_grpc.OrderQueueServiceServicer):
             if not self._queue:
                 return pb.DequeueResponse(success=True, has_order=False, message="Queue is empty")
 
-            entry = self._queue.popleft()
+            # VC-aware dequeue: find order with smallest VC (causal ordering)
+            min_entry = min(self._queue, key=self._vc_compare_key)
+            self._queue.remove(min_entry)
+            entry = min_entry
             size = len(self._queue)
 
         order = pb.QueuedOrder(order_id=entry["order_id"], user_id=entry["user_id"], items=entry["items"])
         order.vector_clock.clock.update(entry["vector_clock"])
 
-        logger.info("Dequeue success | leader=%s | order_id=%s | queue_size=%d", request.executor_id, entry["order_id"], size)
+        logger.info("Dequeue success | leader=%s | order_id=%s | queue_size=%d | VC=%s", 
+                    request.executor_id, entry["order_id"], size, entry["vector_clock"])
         return pb.DequeueResponse(success=True, has_order=True, message="Order dequeued", order=order)
 
 
