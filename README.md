@@ -390,10 +390,7 @@ sequenceDiagram
 
 ### Seminar 11 2PC
 ```mermaid
-
-
 sequenceDiagram
-    sequenceDiagram
     participant C as Client (Frontend/Orchestrator)
     participant Q as Order Queue
     participant E as Order Executor (Coordinator)
