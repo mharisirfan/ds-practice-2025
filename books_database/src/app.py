@@ -85,11 +85,6 @@ class BooksDatabaseServicer(pb_grpc.BooksDatabaseServicer):
                     logger.warning(f"Concurrent write detected for '{request.title}'. Rejecting.")
                     return pb.WriteResponse(success=False, message="Stock modified by another transaction.")
 
-            # Update local state
-            self.store[request.title] = request.new_stock
-            logger.info(f"Updated '{request.title}' to {request.new_stock}")
-            self._save_state()
-
             # If Primary, synchronously propagate to backups
             if ROLE == "primary" and not request.is_replica_sync:
                 for backup_stub in self.backups:
@@ -105,6 +100,11 @@ class BooksDatabaseServicer(pb_grpc.BooksDatabaseServicer):
                         logger.error(f"Failed to replicate to backup: {e}")
                         # In a strict system, you might revert the local write here.
                         return pb.WriteResponse(success=False, message=f"Replication failed: {e}")
+
+            # Update local state
+            self.store[request.title] = request.new_stock
+            logger.info(f"Updated '{request.title}' to {request.new_stock}")
+            self._save_state()
 
         return pb.WriteResponse(success=True, message="Write successful")
 
