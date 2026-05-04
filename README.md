@@ -314,7 +314,7 @@ frontend service:
 
 And then run each service individually.
 
-### System Workflow
+### System Workflow Seminar 11 full
 ```mermaid
 sequenceDiagram
     autonumber
@@ -360,3 +360,31 @@ sequenceDiagram
     ORC->>SUG: ClearOrder(VCf)
 
 ```
+### System Workflow Seminar 11 - half
+```mermaid
+
+sequenceDiagram
+    autonumber
+    participant EX as OrderExecutor (Coordinator)
+    participant DB as BooksDatabase (Participant)
+    participant PAY as PaymentSystem (Participant)
+
+    Note over EX,PAY: New Service: PaymentSystem added as 2PC participant
+
+    EX->>DB: Prepare(order_id, items)
+    EX->>PAY: Prepare(order_id, amount)
+
+    alt All participants ready
+        Note over EX,DB: Commitment: 2PC decision = COMMIT
+        EX->>DB: Commit(order_id)
+        EX->>PAY: Commit(order_id)
+
+        Note over DB: Execution: apply stock updates
+        Note over PAY: Execution: dummy payment execution
+    else Any participant not ready
+        Note over EX,DB: Commitment: 2PC decision = ABORT
+        EX->>DB: Abort(order_id)
+        EX->>PAY: Abort(order_id)
+    end
+```
+
