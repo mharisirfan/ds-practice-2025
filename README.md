@@ -255,12 +255,8 @@ sequenceDiagram
 
 Our leader-election mechanism is lease-based and dynamically supports N executors (N > 2), not just two fixed replicas. Any executor instance with a unique executor_id can compete for leadership by calling TryAcquireLeadership; the order_queue grants leadership to only one active lease holder at a time, so mutual exclusion is preserved for dequeue operations. The system is resilient to failures because if the current leader crashes or stops renewing, its lease expires and another executor automatically becomes leader on the next polling cycle. **This design is centralized**, which makes coordination simple and deterministic, but also introduces trade-offs: the queue service is a potential single point of failure and bottleneck compared to decentralized approaches. **Bonus Point**
 
-## Bonus Points Implementation
-- We implemented the bonus requirement in the orchestrator as the final step of every checkout flow, regardless of success or failure. After all worker-thread events complete (or fail), the orchestrator computes the final vector clock VCf (final_clock = tick_orchestrator(latest_clock)) and broadcasts a ClearOrder request to all relevant services (transaction_verification, fraud_detection, and suggestions) through broadcast_final_clear(...). Each service compares its local vector clock with the received VCf using a causal check (local VC <= VCf): if valid, it safely clears cached order state; if not, it refuses cleanup and returns an error. The orchestrator collects and logs any failed clear targets, so incorrect causal states are explicitly reported rather than silently ignored.
-
-- Our leader-election mechanism is lease-based and dynamically supports N executors (N > 2), not just two fixed replicas. Any executor instance with a unique executor_id can compete for leadership by calling TryAcquireLeadership; the order_queue grants leadership to only one active lease holder at a time, so mutual exclusion is preserved for dequeue operations. The system is resilient to failures because if the current leader crashes or stops renewing, its lease expires and another executor automatically becomes leader on the next polling cycle. This design is centralized, which makes coordination simple and deterministic, but also introduces trade-offs: the queue service is a potential single point of failure and bottleneck compared to decentralized approaches.
-
-### Books Database Service Overview
+# Checkpoint 3
+## Books Database Service Overview
 
 The Books Database functions as a distributed, in-memory key-value store responsible for managing the inventory of items across the microservice ecosystem. To ensure fault tolerance and high availability under heavy system load, the data state is replicated across multiple independent instances. The implementation relies on several core distributed systems patterns to maintain data integrity and consistency.
 
