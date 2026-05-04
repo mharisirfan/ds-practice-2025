@@ -393,6 +393,7 @@ sequenceDiagram
 
 
 sequenceDiagram
+    sequenceDiagram
     participant C as Client (Frontend/Orchestrator)
     participant Q as Order Queue
     participant E as Order Executor (Coordinator)
@@ -402,7 +403,7 @@ sequenceDiagram
     C->>Q: Enqueue approved order
     Q-->>E: Dequeue order
 
-    Note over E,DB,P: Phase 1 - Prepare
+    Note over E: Phase 1 - Prepare
     E->>DB: Prepare(order_id, items)
     DB-->>E: ready / reject
     E->>P: Prepare(order_id, amount)
@@ -413,7 +414,7 @@ sequenceDiagram
         E->>P: Abort(order_id)
         E-->>C: Order failed
     else All ready
-        Note over E,DB,P: Phase 2 - Commit
+        Note over E: Phase 2 - Commit
         E->>DB: Commit(order_id)
         DB-->>E: success
         E->>P: Commit(order_id)
