@@ -343,54 +343,7 @@ sequenceDiagram
 ---------------------------------------------------------------------------------
 
 
-
-
-
-
-### Running the code with Docker Compose [recommended]
-
-To run the code, you need to clone this repository, make sure you have Docker and Docker Compose installed, and run the following command in the root folder of the repository:
-
-```bash
-docker compose up
-```
-
-This will start the system with the multiple services. Each service will be restarted automatically when you make changes to the code, so you don't have to restart the system manually while developing. If you want to know how the services are started and configured, check the `docker-compose.yaml` file.
-
-The checkpoint evaluations will be done using the code that is started with Docker Compose, so make sure that your code works with Docker Compose.
-
-### Two-Phase Commit for Order Execution
-
-The order executor acts as the coordinator for a Two-Phase Commit (2PC) protocol. The participants are the books database and the dummy payment service. During Phase 1, the executor sends `Prepare` to both services. The database reserves the required stock for the order without changing committed stock, and the payment service records a prepared dummy payment. If every participant replies ready, Phase 2 sends `Commit`; otherwise the executor sends `Abort`.
-
-The database applies stock updates only after `Commit`, and the payment service executes the dummy payment only after `Commit`. The payment service keeps transaction state in `/tmp/payment_transactions.json`, making repeated `Commit` or `Abort` calls idempotent across simple service restarts. The executor also retries commit decisions to reduce the blocking window if a participant is temporarily unavailable.
-
-2PC uses two phases and, for two participants, normally needs two prepare requests plus two final decision requests. Its main trade-off is blocking: once participants vote ready, they must wait for the coordinator's final decision. This gives atomic order execution across stock and payment, but availability can suffer if the coordinator or a participant fails during the commit phase.
-
-If, for some reason, changes to the code are not reflected, try to force rebuilding the Docker images with the following command:
-
-```bash
-docker compose up --build
-```
-
-### Run the code locally
-
-Even though you can run the code locally, it is recommended to use Docker and Docker Compose to run the code. This way you don't have to install any dependencies locally and you can easily run the code on any platform.
-
-If you want to run the code locally, you need to install the following dependencies:
-
-backend services:
-- Python 3.8 or newer
-- pip
-- [grpcio-tools](https://grpc.io/docs/languages/python/quickstart/)
-- requirements.txt dependencies from each service
-
-frontend service:
-- It's a simple static HTML page, you can open `frontend/src/index.html` in your browser.
-
-And then run each service individually.
-
-### System Workflow Seminar 11 full
+## System Workflow Seminar 11 full
 ```mermaid
 sequenceDiagram
     autonumber
@@ -435,33 +388,6 @@ sequenceDiagram
     ORC->>FD: ClearOrder(VCf)
     ORC->>SUG: ClearOrder(VCf)
 
-```
-### System Workflow Seminar 11 - half
-```mermaid
-
-sequenceDiagram
-    autonumber
-    participant EX as OrderExecutor (Coordinator)
-    participant DB as BooksDatabase (Participant)
-    participant PAY as PaymentSystem (Participant)
-
-    Note over EX,PAY: New Service: PaymentSystem added as 2PC participant
-
-    EX->>DB: Prepare(order_id, items)
-    EX->>PAY: Prepare(order_id, amount)
-
-    alt All participants ready
-        Note over EX,DB: Commitment: 2PC decision = COMMIT
-        EX->>DB: Commit(order_id)
-        EX->>PAY: Commit(order_id)
-
-        Note over DB: Execution: apply stock updates
-        Note over PAY: Execution: dummy payment execution
-    else Any participant not ready
-        Note over EX,DB: Commitment: 2PC decision = ABORT
-        EX->>DB: Abort(order_id)
-        EX->>PAY: Abort(order_id)
-    end
 ```
 
 ### Seminar 11 2PC
