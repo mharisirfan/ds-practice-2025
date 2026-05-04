@@ -343,7 +343,7 @@ sequenceDiagram
 ---------------------------------------------------------------------------------
 
 
-## Distributed Commitment Protocol diagram
+## System Flow - Complete Protocol - Distributed Commitment Protocol diagram
 ```mermaid
 sequenceDiagram
     autonumber
@@ -448,7 +448,7 @@ sequenceDiagram
 
 ```
 
-### Seminar 11 2PC
+### 2-Phase Commit Deep Dive
 ```mermaid
 sequenceDiagram
     participant C as Client (Frontend/Orchestrator)
